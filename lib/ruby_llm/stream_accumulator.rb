@@ -23,6 +23,8 @@ module RubyLLM
       @pending_think_tag = +''
       @latest_tool_call_id = nil
       @tool_call_ids_by_index = {}
+      @tool_references = []
+      @tool_search_blocks = []
     end
 
     def add(chunk)
@@ -31,6 +33,8 @@ module RubyLLM
 
       handle_chunk_content(chunk)
       accumulate_citations(chunk.citations)
+      accumulate_tool_references(chunk.tool_references)
+      accumulate_tool_search_blocks(chunk.tool_search_blocks)
       append_thinking_from_chunk(chunk)
       @finish_reason = chunk.finish_reason if chunk.finish_reason
       count_tokens chunk
@@ -56,6 +60,8 @@ module RubyLLM
         finish_reason: @finish_reason,
         model: model,
         tool_calls: tool_calls_from_stream(response),
+        tool_references: @tool_references,
+        tool_search_blocks: @tool_search_blocks,
         raw: response
       )
     end
@@ -66,6 +72,23 @@ module RubyLLM
     def accumulate_citations(new_citations)
       new_citations.each do |citation|
         @citations << citation unless @citations.include?(citation)
+      end
+    end
+
+    # Tool references discovered by a provider's tool search stream in as their
+    # own chunks; collect them (de-duplicated) so the final Message carries them
+    # and Chat can record the discoveries — matching the non-streaming path.
+    def accumulate_tool_references(new_references)
+      Array(new_references).each do |reference|
+        @tool_references << reference unless @tool_references.include?(reference)
+      end
+    end
+
+    # The raw tool-search blocks/items stream in whole; collect them in order
+    # so providers can replay them in the conversation history.
+    def accumulate_tool_search_blocks(new_blocks)
+      Array(new_blocks).each do |block|
+        @tool_search_blocks << block unless @tool_search_blocks.include?(block)
       end
     end
 
@@ -94,7 +117,8 @@ module RubyLLM
           id: tc.id,
           name: tc.name,
           arguments: arguments,
-          thought_signature: tc.thought_signature
+          thought_signature: tc.thought_signature,
+          namespace: tc.namespace
         )
       end
     end
@@ -124,7 +148,8 @@ module RubyLLM
         id: tool_call_id,
         name: tool_call.name,
         arguments: initial_tool_call_arguments(tool_call),
-        thought_signature: tool_call.thought_signature
+        thought_signature: tool_call.thought_signature,
+        namespace: tool_call.namespace
       )
       @tool_call_ids_by_index[stream_key] = tool_call_key unless stream_key.nil?
       @latest_tool_call_id = tool_call_key

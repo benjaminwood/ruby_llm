@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'delegate'
 require 'ruby_llm/schema'
 
 module RubyLLM
@@ -123,6 +124,31 @@ module RubyLLM
         self
       end
 
+      # :call-seq:
+      #   deferred(value = true) -> self
+      #
+      # Marks this tool class as deferred, so Chat keeps it out of the
+      # model's visible tool menu and lets a provider's tool-search
+      # mechanism load it on demand (see the Tool Search guide). Deferral
+      # only takes effect on providers whose protocol supports it; elsewhere
+      # the tool registers normally. A per-call <tt>defer:</tt> on
+      # Chat#with_tools overrides this class default.
+      #
+      #   class DeepResearch < RubyLLM::Tool
+      #     description "Runs a multi-step web investigation"
+      #     deferred
+      #   end
+      #
+      def deferred(value = true) # rubocop:disable Style/OptionalBooleanParameter
+        @deferred = value ? true : false
+        self
+      end
+
+      # Returns whether the tool class was marked deferred with ::deferred.
+      def deferred?
+        @deferred == true
+      end
+
       def split_result(result) # :nodoc:
         case result
         when Attachment then ['', [result]]
@@ -178,6 +204,36 @@ module RubyLLM
 
     def provider_options # :nodoc:
       self.class.provider_options
+    end
+
+    # Returns whether this tool is deferred, delegating to the class default
+    # set with ::deferred. Chat uses this to decide routing when
+    # #with_tools is called without an explicit <tt>defer:</tt>.
+    def deferred?
+      self.class.deferred?
+    end
+
+    # Wraps a tool to pin a per-registration deferred flag without mutating
+    # the tool, so one shared instance can be registered deferred in one
+    # chat and active in another. A protocol's tool-search adapter treats a
+    # Registration reporting <tt>deferred? == true</tt> as the authoritative
+    # signal to emit the wire-level defer flag; a bare Tool is never
+    # deferred on the wire regardless of its class default. Delegates every
+    # other method to the wrapped tool.
+    class Registration < SimpleDelegator
+      def initialize(tool, deferred:)
+        super(tool)
+        @deferred = deferred
+      end
+
+      def deferred?
+        @deferred
+      end
+
+      # The wrapped Tool instance.
+      def tool
+        __getobj__
+      end
     end
 
     def parameters_schema # :nodoc:

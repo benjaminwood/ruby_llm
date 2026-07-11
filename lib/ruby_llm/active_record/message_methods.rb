@@ -45,6 +45,8 @@ module RubyLLM
           tokens: tokens,
           tool_calls: extract_tool_calls,
           tool_call_id: extract_tool_call_id,
+          tool_references: optional_column(:tool_references),
+          tool_search_blocks: optional_column(:tool_search_blocks),
           finish_reason: optional_column(:finish_reason),
           model: model_association&.model_id,
           cache_until_here: cache_until_here?

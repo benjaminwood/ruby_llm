@@ -7,8 +7,37 @@ module RubyLLM
       module Tools
         module_function
 
+        # Anthropic's native server-side BM25 tool-search primitive. Appended
+        # to the tools array whenever any tool is deferred; Claude calls it
+        # server-side to discover and load the deferred tools it needs.
+        NATIVE_TOOL_SEARCH = {
+          type: 'tool_search_tool_bm25_20251119',
+          name: 'tool_search_tool_bm25'
+        }.freeze
+
         def find_tool_uses(blocks)
           blocks.select { |c| c['type'] == 'tool_use' }
+        end
+
+        # Block types the server-side tool-search primitive adds to assistant
+        # content. Kept raw on the Message and replayed verbatim on the next
+        # request (see Chat#append_tool_search_blocks).
+        TOOL_SEARCH_BLOCK_TYPES = %w[server_tool_use tool_search_tool_result].freeze
+
+        # Extracts the names of tools discovered by the server-side tool-search
+        # primitive from +tool_search_tool_result+ blocks, so Chat can record
+        # them on its deferred catalog.
+        def find_tool_references(blocks)
+          blocks.select { |c| c['type'] == 'tool_search_tool_result' }.flat_map do |block|
+            content = block['content']
+            references = content.is_a?(Hash) ? Array(content['tool_references']) : []
+            references.filter_map { |reference| reference['tool_name'] }
+          end
+        end
+
+        # The raw tool-search blocks, in order, for verbatim history replay.
+        def find_tool_search_blocks(blocks)
+          blocks.select { |c| TOOL_SEARCH_BLOCK_TYPES.include?(c['type']) }
         end
 
         def format_tool_result(msg)
@@ -56,10 +85,42 @@ module RubyLLM
             description: tool.description,
             input_schema: input_schema || default_input_schema
           }
+          declaration[:defer_loading] = true if deferred?(tool)
+          unless tool.provider_options.empty?
+            declaration = RubyLLM::Utils.deep_merge(declaration,
+                                                    tool.provider_options)
+          end
 
-          return declaration if tool.provider_options.empty?
+          reject_deferred_cache_control!(tool, declaration)
+          declaration
+        end
 
-          RubyLLM::Utils.deep_merge(declaration, tool.provider_options)
+        # Anthropic rejects a tool that is both deferred and carries a
+        # cache_control breakpoint (HTTP 400). Fail fast with a clear message
+        # rather than letting the request 400 opaquely.
+        def reject_deferred_cache_control!(tool, declaration)
+          return unless declaration[:defer_loading]
+          return unless declaration.key?(:cache_control) || declaration.key?('cache_control')
+
+          raise ArgumentError,
+                "Tool #{tool.name}: defer_loading cannot be combined with cache_control (Anthropic returns 400). " \
+                'Put the cache breakpoint on a non-deferred tool.'
+        end
+
+        # Formats every tool for the request, appending the native tool-search
+        # primitive when any tool is deferred so Claude can load the deferred
+        # ones on demand.
+        def format_tools(tools)
+          formatted = tools.values.map { |tool| function_for(tool) }
+          # dup: payload hashes must stay mutable for before_request hooks.
+          formatted << NATIVE_TOOL_SEARCH.dup if formatted.any? { |entry| entry[:defer_loading] }
+          formatted
+        end
+
+        # Only a Registration explicitly marked deferred emits the wire-level
+        # flag; a bare Tool never does, regardless of its class default.
+        def deferred?(tool)
+          tool.is_a?(RubyLLM::Tool::Registration) && tool.deferred?
         end
 
         def extract_tool_calls(data)

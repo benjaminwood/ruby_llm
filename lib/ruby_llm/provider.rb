@@ -147,6 +147,15 @@ module RubyLLM
     end
     # rubocop:enable Metrics/ParameterLists
 
+    # Whether the protocol this provider would use for +model+ (honoring an
+    # explicit <tt>protocol:</tt> override) can defer tool definitions for
+    # on-demand loading. Chat consults this before deferring tools.
+    def supports_deferred_tools?(model, protocol: nil) # :nodoc:
+      resolve_protocol(
+        protocol, model, tools: {}, schema: nil, thinking: nil, tool_prefs: nil, citations: false
+      ).new(self, model).supports_deferred_tools?
+    end
+
     def preprocess_message(message, model:, protocol: nil) # :nodoc:
       protocol_class = resolve_protocol(
         protocol,

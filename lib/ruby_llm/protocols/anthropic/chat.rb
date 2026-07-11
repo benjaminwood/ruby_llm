@@ -24,8 +24,13 @@ module RubyLLM
           system_messages, chat_messages = separate_messages(messages)
           explicit_boundaries = cache_boundaries?(messages)
           system_content = build_system_content(system_messages, caching:)
+          # Search blocks are only replayed while the request still carries
+          # deferred tools (and thus the search primitive); otherwise the API
+          # rejects them. Omitting a pair merely costs a re-search.
+          replay_search = tools.values.any? { |tool| Tools.deferred?(tool) }
 
-          build_base_payload(chat_messages, model, stream, thinking, citations: citations, caching:).tap do |payload|
+          build_base_payload(chat_messages, model, stream, thinking, citations: citations, caching:,
+                                                                     replay_search:).tap do |payload|
             payload[:max_tokens] = max_output_tokens if max_output_tokens
             add_optional_fields(payload, system_content:, tools:, tool_prefs:, temperature:, schema:)
             payload[:cache_control] = prompt_cache_control(caching) if caching && !explicit_boundaries
@@ -56,11 +61,12 @@ module RubyLLM
           end
         end
 
-        def build_base_payload(chat_messages, model, stream, thinking, citations: false, caching: nil) # rubocop:disable Metrics/ParameterLists
+        def build_base_payload(chat_messages, model, stream, thinking, citations: false, caching: nil, # rubocop:disable Metrics/ParameterLists
+                               replay_search: true)
           payload = {
             model: model.id,
             messages: chat_messages.map do |msg|
-              format_message(msg, thinking: thinking, citations: citations, caching:)
+              format_message(msg, thinking: thinking, citations: citations, caching:, replay_search:)
             end,
             stream: stream,
             max_tokens: model.max_output_tokens || 4096
@@ -73,7 +79,7 @@ module RubyLLM
 
         def add_optional_fields(payload, system_content:, tools:, tool_prefs:, temperature:, schema: nil) # rubocop:disable Metrics/ParameterLists
           if tools.any?
-            payload[:tools] = tools.values.map { |t| Tools.function_for(t) }
+            payload[:tools] = Tools.format_tools(tools)
             unless tool_prefs[:choice].nil? && tool_prefs[:calls].nil?
               payload[:tool_choice] = Tools.build_tool_choice(tool_prefs)
             end
@@ -115,7 +121,7 @@ module RubyLLM
           tool_use_blocks = Tools.find_tool_uses(content_blocks)
 
           build_message(data, text_content, citations, thinking_content, thinking_signature, tool_use_blocks,
-                        raw)
+                        content_blocks, raw)
         end
 
         def extract_text_and_citations(blocks)
@@ -171,7 +177,8 @@ module RubyLLM
           thinking_block&.dig('signature') || thinking_block&.dig('data')
         end
 
-        def build_message(data, content, citations, thinking, thinking_signature, tool_use_blocks, raw) # rubocop:disable Metrics/ParameterLists
+        def build_message(data, content, citations, thinking, thinking_signature, tool_use_blocks, # rubocop:disable Metrics/ParameterLists
+                          content_blocks, raw)
           usage = data['usage'] || {}
           thinking_tokens = usage.dig('output_tokens_details', 'thinking_tokens') ||
                             usage.dig('output_tokens_details', 'reasoning_tokens') ||
@@ -184,6 +191,8 @@ module RubyLLM
             citations: citations,
             thinking: Thinking.build(text: thinking, signature: thinking_signature),
             tool_calls: Tools.parse_tool_calls(tool_use_blocks),
+            tool_references: Tools.find_tool_references(content_blocks),
+            tool_search_blocks: Tools.find_tool_search_blocks(content_blocks),
             input_tokens: usage['input_tokens'],
             output_tokens: usage['output_tokens'],
             cache_read_tokens: extract_cache_read_tokens(data),
@@ -195,19 +204,20 @@ module RubyLLM
           )
         end
 
-        def format_message(msg, thinking: nil, citations: false, caching: nil)
+        def format_message(msg, thinking: nil, citations: false, caching: nil, replay_search: true)
           thinking_enabled = thinking&.enabled?
 
           if msg.tool_call?
-            format_tool_call_with_thinking(msg, thinking_enabled, caching:)
+            format_tool_call_with_thinking(msg, thinking_enabled, caching:, replay_search:)
           elsif msg.tool_result?
             Tools.format_tool_result(msg)
           else
-            format_basic_message_with_thinking(msg, thinking_enabled, citations: citations, caching:)
+            format_basic_message_with_thinking(msg, thinking_enabled, citations: citations, caching:, replay_search:)
           end
         end
 
-        def format_basic_message_with_thinking(msg, thinking_enabled, citations: false, caching: nil)
+        def format_basic_message_with_thinking(msg, thinking_enabled, citations: false, caching: nil,
+                                               replay_search: true)
           content_blocks = []
 
           if msg.role == :assistant && thinking_enabled
@@ -216,7 +226,10 @@ module RubyLLM
           end
 
           append_formatted_content(content_blocks, msg, citations: citations)
+          # Cache boundary first: a cache_control marker must land on the
+          # message's own content, never on a replayed tool-search block.
           inject_cache_control(content_blocks, caching:) if msg.cache_until_here?
+          append_tool_search_blocks(content_blocks, msg) if replay_search && msg.role == :assistant
 
           {
             role: convert_role(msg.role),
@@ -224,9 +237,10 @@ module RubyLLM
           }
         end
 
-        def format_tool_call_with_thinking(msg, thinking_enabled, caching: nil)
+        def format_tool_call_with_thinking(msg, thinking_enabled, caching: nil, replay_search: true)
           content_blocks = prepend_thinking_block([], msg, thinking_enabled)
           append_formatted_content(content_blocks, msg) unless msg.content.nil? || msg.content.empty?
+          append_tool_search_blocks(content_blocks, msg) if replay_search
 
           msg.tool_calls.each_value do |tool_call|
             content_blocks << {
@@ -242,6 +256,25 @@ module RubyLLM
             role: 'assistant',
             content: content_blocks
           }
+        end
+
+        # Replays the server_tool_use / tool_search_tool_result blocks an
+        # assistant message carried, per Anthropic's contract ("pass the
+        # assistant's content back unchanged"): replayed references let the
+        # API re-expand discovered tools so Claude reuses them in later turns
+        # without re-searching. Only complete pairs are replayed — the API
+        # rejects an unpaired block, while omitting a whole pair merely costs
+        # a re-search. A truncated stream (or a hand-built message) can carry
+        # either half alone.
+        def append_tool_search_blocks(content_blocks, msg)
+          uses = msg.tool_search_blocks.select { |b| b['type'] == 'server_tool_use' }.to_h { |b| [b['id'], b] }
+          results = msg.tool_search_blocks.select { |b| b['type'] == 'tool_search_tool_result' }
+                                          .to_h { |b| [b['tool_use_id'], b] }
+
+          uses.each do |id, use|
+            result = results[id] or next
+            content_blocks << use << result
+          end
         end
 
         def prepend_thinking_block(content_blocks, msg, thinking_enabled)

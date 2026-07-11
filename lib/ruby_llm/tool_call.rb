@@ -25,21 +25,29 @@ module RubyLLM
     # RubyLLM replays it to the provider on later requests.
     attr_accessor :thought_signature
 
-    def initialize(id:, name:, arguments: {}, thought_signature: nil) # :nodoc:
+    # The OpenAI tool-search namespace this call belongs to, or +nil+. Calls
+    # to tools discovered via tool search carry one, and the API requires it
+    # round-tripped with the replayed function_call item.
+    attr_accessor :namespace
+
+    def initialize(id:, name:, arguments: {}, thought_signature: nil, namespace: nil) # :nodoc:
       @id = id
       @name = name
       @arguments = arguments
       @thought_signature = thought_signature
+      @namespace = namespace
     end
 
-    # Returns a Hash with the keys +:id+, +:name+, +:arguments+, and
-    # +:thought_signature+. Keys with +nil+ values are omitted.
+    # Returns a Hash with the keys +:id+, +:name+, +:arguments+,
+    # +:thought_signature+, and +:namespace+. Keys with +nil+ values are
+    # omitted.
     def to_h
       {
         id: @id,
         name: @name,
         arguments: @arguments,
-        thought_signature: @thought_signature
+        thought_signature: @thought_signature,
+        namespace: @namespace
       }.compact
     end
   end

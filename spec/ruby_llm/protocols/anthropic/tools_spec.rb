@@ -20,6 +20,7 @@ RSpec.describe RubyLLM::Protocols::Anthropic::Tools do
                       content: content,
                       attachments: attachments,
                       cache_until_here?: false,
+                      tool_search_blocks: [],
                       tool_calls: {
                         'tool_123' => instance_double(RubyLLM::ToolCall,
                                                       id: 'tool_123',

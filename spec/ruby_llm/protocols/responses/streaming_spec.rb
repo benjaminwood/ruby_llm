@@ -21,6 +21,23 @@ RSpec.describe RubyLLM::Protocols::Responses::Streaming do
     expect(chunk.thinking.text).to eq('hmm')
   end
 
+  it 'surfaces tool_search_output tools as tool_references and keeps the raw item' do
+    item = { 'type' => 'tool_search_output',
+             'tools' => [{ 'name' => 'weather_lookup' }, { 'name' => 'stock_price' }] }
+    chunk = build_chunk({ 'type' => 'response.output_item.done', 'item' => item })
+
+    expect(chunk.tool_references).to eq(%w[weather_lookup stock_price])
+    expect(chunk.tool_search_blocks).to eq([item])
+  end
+
+  it 'keeps tool_search_call items for replay' do
+    item = { 'type' => 'tool_search_call', 'id' => 'ts_1' }
+    chunk = build_chunk({ 'type' => 'response.output_item.done', 'item' => item })
+
+    expect(chunk.tool_search_blocks).to eq([item])
+    expect(chunk.tool_references).to eq([])
+  end
+
   it 'accumulates a function call across item and argument events' do
     accumulator = RubyLLM::StreamAccumulator.new
 

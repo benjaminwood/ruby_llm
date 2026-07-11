@@ -66,6 +66,19 @@ module RubyLLM
     # across providers.
     attr_reader :citations
 
+    # The names of deferred tools a provider's tool-search mechanism loaded
+    # in response to this message, as an array of Strings. Empty unless the
+    # chat uses deferred tools (see Chat#with_tools with +defer:+). Chat
+    # records these on its ToolCatalog and reports them via
+    # Chat#after_tool_search.
+    attr_reader :tool_references
+
+    # The provider-native tool-search blocks this assistant message carried
+    # (e.g. Anthropic's +server_tool_use+/+tool_search_tool_result+ pairs),
+    # as raw Hashes. Providers replay them verbatim when formatting the
+    # conversation for the next request, per their tool-search contract.
+    attr_reader :tool_search_blocks # :nodoc:
+
     # The provider-reported reason the model stopped, preserved as-is,
     # such as <tt>"stop"</tt>, <tt>"max_tokens"</tt>, or
     # <tt>"MAX_TOKENS"</tt>.
@@ -92,6 +105,8 @@ module RubyLLM
       @raw = options[:raw]
       @thinking = options[:thinking]
       @citations = Array(options[:citations])
+      @tool_references = Array(options[:tool_references])
+      @tool_search_blocks = Array(options[:tool_search_blocks])
       @finish_reason = options[:finish_reason]
       @cache_until_here = options.fetch(:cache_until_here, false)
 
@@ -227,6 +242,8 @@ module RubyLLM
         thinking: thinking&.text,
         thinking_signature: thinking&.signature,
         citations: list_to_h(citations),
+        tool_references: (tool_references unless tool_references.empty?),
+        tool_search_blocks: (tool_search_blocks unless tool_search_blocks.empty?),
         finish_reason: finish_reason,
         cache_until_here: cache_until_here? || nil
       }.merge(tokens ? tokens.to_h : {}).compact

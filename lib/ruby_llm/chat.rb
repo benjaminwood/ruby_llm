@@ -22,6 +22,7 @@ module RubyLLM
   # A Chat is Enumerable over its messages.
   class Chat
     include Enumerable
+    include ToolSearch
 
     # The Model the chat sends requests to.
     attr_reader :model
@@ -34,6 +35,10 @@ module RubyLLM
 
     # The registered tools, as a Hash of tool name Symbols to Tool instances.
     attr_reader :tools
+
+    # The deferred tools, as a ToolCatalog: tools registered with
+    # <tt>defer:</tt>, discovered by the model on demand via tool search.
+    attr_reader :tool_catalog
 
     # Extra request options set with #with_provider_options, expressed in
     # the provider's request vocabulary.
@@ -77,7 +82,6 @@ module RubyLLM
       @temperature = nil
       @max_output_tokens = nil
       @messages = []
-      @tools = {}
       reset_tools
       @provider_options = {}
       @headers = {}
@@ -201,20 +205,27 @@ module RubyLLM
     #
     #   chat.without_tools.with_tools(NewTool)
     #
-    def with_tools(*tools)
+    # Pass <tt>defer: true</tt> to keep the tools out of the model's visible
+    # menu and let a provider's tool-search mechanism load them on demand
+    # (<tt>defer: false</tt> forces a +deferred+ class to register normally).
+    # Deferral applies only on providers whose protocol supports tool search
+    # (currently Anthropic and the OpenAI Responses API); otherwise +defer:+
+    # is ignored with a one-time warning. See the Tool Search guide.
+    #
+    #   chat.with_tools(*mcp_client.tools, defer: true)
+    #
+    def with_tools(*tools, defer: nil)
       raise ArgumentError, 'To remove all tools, use without_tools' if tools == [nil]
 
-      tools.flatten.compact.each do |tool|
-        tool_instance = tool.is_a?(Class) ? tool.new : tool
-        @tools[tool_instance.name.to_sym] = tool_instance
-      end
+      tools.flatten.compact.each { |tool| register_tool(tool, defer: defer) }
       self
     end
 
-    # Removes all registered tools, leaving the options set with
-    # #with_tool_options unchanged. Returns +self+.
+    # Removes all registered tools, including deferred ones, leaving the
+    # options set with #with_tool_options unchanged. Returns +self+.
     def without_tools
       @tools.clear
+      @tool_catalog = ToolCatalog.new
       self
     end
 
@@ -588,6 +599,7 @@ module RubyLLM
     def add_completion(response) # :nodoc:
       run_callbacks(:before_message)
       add_message response
+      record_tool_search(response)
       run_callbacks(:after_message, response)
       response
     end
@@ -598,7 +610,7 @@ module RubyLLM
     def render
       @provider.render(
         messages,
-        tools: @tools,
+        tools: effective_tools,
         tool_prefs: @tool_prefs,
         temperature: @temperature,
         max_output_tokens: @max_output_tokens,
@@ -689,6 +701,7 @@ module RubyLLM
         result = provider_completion(stream_tracker:, &block)
         run_callbacks(:before_message) unless block_given?
         add_message result
+        record_tool_search(result)
         run_callbacks(:after_message, result)
         record_completion_event(event, result)
       end
@@ -705,6 +718,7 @@ module RubyLLM
         input_messages: messages.dup,
         message_count: messages.size,
         tools: tools.keys,
+        deferred_tools: @tool_catalog.deferred_tools.keys,
         tool_choice: tool_prefs[:choice],
         tool_call_limit: tool_prefs[:calls],
         temperature: @temperature,
@@ -822,7 +836,7 @@ module RubyLLM
     def provider_completion(stream_tracker: nil, &)
       @provider.complete(
         messages,
-        tools: @tools,
+        tools: effective_tools,
         tool_prefs: @tool_prefs,
         temperature: @temperature,
         max_output_tokens: @max_output_tokens,
@@ -900,13 +914,8 @@ module RubyLLM
     end
 
     def execute_tool(tool_call)
-      tool = tools[tool_call.name.to_sym]
-      if tool.nil?
-        return {
-          error: "Model tried to call unavailable tool `#{tool_call.name}`. " \
-                 "Available tools: #{tools.keys.to_json}."
-        }
-      end
+      tool = find_tool(tool_call.name)
+      return unavailable_tool_error(tool_call) if tool.nil?
 
       args = tool_call.arguments
       payload = {
@@ -932,7 +941,8 @@ module RubyLLM
     end
 
     def reset_tools
-      @tools.clear
+      @tools = {}
+      @tool_catalog = ToolCatalog.new
       @tool_prefs = { choice: nil, calls: nil }
       @concurrency = normalize_tool_concurrency(@config.tool_concurrency)
       self
@@ -941,7 +951,7 @@ module RubyLLM
     def update_tool_options(choice:, calls:)
       unless choice.nil?
         normalized_choice = normalize_tool_choice(choice)
-        valid_tool_choices = %i[auto none required] + tools.keys
+        valid_tool_choices = %i[auto none required] + tools.keys + @tool_catalog.deferred_tools.keys
         unless valid_tool_choices.include?(normalized_choice)
           raise InvalidToolChoiceError,
                 "Invalid tool choice: #{choice}. Valid choices are: #{valid_tool_choices.join(', ')}"
@@ -985,6 +995,7 @@ module RubyLLM
 
     def tool_name_for_choice_class(tool_class)
       matched_tool_name = tools.find { |_name, tool| tool.is_a?(tool_class) }&.first
+      matched_tool_name ||= @tool_catalog.deferred_tools.find { |_name, tool| tool.is_a?(tool_class) }&.first
       return matched_tool_name if matched_tool_name
 
       classify_tool_name(tool_class.name)

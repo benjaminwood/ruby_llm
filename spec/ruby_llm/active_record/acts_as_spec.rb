@@ -1086,6 +1086,13 @@ RSpec.describe RubyLLM::ActiveRecord::ActsAs do
       expect(tool_call_received.name).to eq('calculator')
       expect(tool_result_received).to eq('4')
     end
+
+    it 'delegates after_tool_search and tool_catalog to the underlying chat' do
+      chat = Chat.create!(model: model)
+
+      expect(chat.after_tool_search { |names| names }).to eq(chat)
+      expect(chat.tool_catalog).to be_a(RubyLLM::ToolCatalog)
+    end
   end
 
   describe 'streaming fallback persistence' do

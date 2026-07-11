@@ -22,7 +22,7 @@ module RubyLLM
           tool_prefs ||= {}
           payload = {
             model: model.id,
-            input: format_input(messages),
+            input: format_input(messages, replay_search: tools.any? { |_, tool| Tools.deferred?(tool) }),
             instructions: format_instructions(messages),
             stream: stream,
             store: false
@@ -33,7 +33,7 @@ module RubyLLM
           payload[:max_output_tokens] = max_output_tokens unless max_output_tokens.nil?
 
           if tools.any?
-            payload[:tools] = tools.map { |_, tool| tool_for(tool) }
+            payload[:tools] = format_tools(tools)
             payload[:tool_choice] = build_tool_choice(tool_prefs[:choice]) unless tool_prefs[:choice].nil?
             payload[:parallel_tool_calls] = tool_prefs[:calls] == :many unless tool_prefs[:calls].nil?
           end
@@ -65,11 +65,33 @@ module RubyLLM
               signature: parse_reasoning_signature(output)
             ),
             tool_calls: parse_function_calls(output, response: raw, finish_reason: finish_reason),
+            tool_references: parse_tool_references(output),
+            tool_search_blocks: parse_tool_search_items(output),
             model: data['model'],
             raw: raw,
             finish_reason: finish_reason,
             **parse_usage(data['usage'] || {})
           )
+        end
+
+        # Item types the hosted tool-search adds to the response output. Kept
+        # raw on the Message and replayed on the next request so the loaded
+        # tool set carries across turns. See
+        # https://developers.openai.com/api/docs/guides/tools-tool-search
+        TOOL_SEARCH_ITEM_TYPES = %w[tool_search_call tool_search_output].freeze
+
+        # Extracts the names of tools the hosted tool-search loaded, carried
+        # on +tool_search_output+ items, so Chat can record them on its
+        # deferred catalog.
+        def parse_tool_references(output)
+          output.select { |item| item['type'] == 'tool_search_output' }.flat_map do |item|
+            Array(item['tools']).filter_map { |tool| tool['name'] }
+          end
+        end
+
+        # The raw tool-search items, in order, for history replay.
+        def parse_tool_search_items(output)
+          output.select { |item| TOOL_SEARCH_ITEM_TYPES.include?(item['type']) }
         end
 
         def parse_output_citations(output, content)
@@ -135,16 +157,16 @@ module RubyLLM
           instructions.empty? ? nil : instructions.join("\n\n")
         end
 
-        def format_input(messages)
-          messages.reject { |msg| msg.role == :system }.flat_map { |msg| format_item(msg) }
+        def format_input(messages, replay_search: true)
+          messages.reject { |msg| msg.role == :system }.flat_map { |msg| format_item(msg, replay_search:) }
         end
 
-        def format_item(msg)
+        def format_item(msg, replay_search: true)
           case msg.role
           when :tool
             format_tool_items(msg)
           when :assistant
-            format_assistant_items(msg)
+            format_assistant_items(msg, replay_search:)
           else
             { role: 'user', content: format_content(msg.content, msg.attachments) }
           end
@@ -168,10 +190,18 @@ module RubyLLM
           items
         end
 
-        def format_assistant_items(msg)
+        def format_assistant_items(msg, replay_search: true)
           items = []
           items << format_reasoning_item(msg.thinking) if msg.thinking&.signature
           items << { role: 'assistant', content: format_output_content(msg) } unless empty_content?(msg.content)
+          # Replay the tool-search items this assistant turn carried so the
+          # loaded tool set persists across the stateless conversation replay.
+          # Only while the request still declares deferred tools, and filtered
+          # by type: a chat switched over from another provider may carry that
+          # provider's search blocks, which this API would reject.
+          if replay_search
+            items.concat(msg.tool_search_blocks.select { |item| TOOL_SEARCH_ITEM_TYPES.include?(item['type']) })
+          end
           items.concat(format_function_call_items(msg.tool_calls)) if msg.tool_call?
           items
         end
@@ -186,12 +216,16 @@ module RubyLLM
 
         def format_function_call_items(tool_calls)
           tool_calls.map do |_, tc|
-            {
+            item = {
               type: 'function_call',
               call_id: tc.id,
               name: tc.name,
               arguments: JSON.generate(tc.arguments)
             }
+            # Calls to tools discovered via tool search carry a namespace the
+            # API requires round-tripped (verified live: omitting it is a 400).
+            item[:namespace] = tc.namespace if tc.namespace
+            item
           end
         end
 
@@ -223,7 +257,8 @@ module RubyLLM
               ToolCall.new(
                 id: call['call_id'],
                 name: call['name'],
-                arguments: parse_function_call_arguments(arguments, response: response, finish_reason: finish_reason)
+                arguments: parse_function_call_arguments(arguments, response: response, finish_reason: finish_reason),
+                namespace: call['namespace']
               )
             ]
           end

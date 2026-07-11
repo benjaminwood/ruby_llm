@@ -172,6 +172,19 @@ module RubyLLM
           'other'
         end
 
+        # Tool search on the Responses API requires gpt-5.4 or later. Parsed
+        # numerically (with a hard version boundary) so new minor/major
+        # releases work without a table update.
+        # https://developers.openai.com/api/docs/guides/tools-tool-search
+        def supports_tool_search?(model_id)
+          match = model_id.to_s.match(/\Agpt-(\d+)(?:\.(\d+))?(?=-|\z)/)
+          return false unless match
+
+          major = match[1].to_i
+          minor = match[2].to_i
+          major > 5 || (major == 5 && minor >= 4)
+        end
+
         def supports_vision?(model_id)
           case model_family(model_id)
           when 'gpt_image', 'gpt_image_mini', 'gpt_image15', 'gpt5', 'gpt5_mini', 'gpt5_nano', 'gpt41', 'gpt41_mini',

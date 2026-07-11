@@ -24,6 +24,29 @@ RSpec.describe RubyLLM::StreamAccumulator do
       expect(message.model).to eq('model-a')
     end
 
+    it 'accumulates deferred-tool references onto the final message, de-duplicated' do
+      accumulator = described_class.new
+      refs = ->(names) { RubyLLM::Chunk.new(role: :assistant, content: nil, tool_references: names) }
+
+      accumulator.add(RubyLLM::Chunk.new(role: :assistant, content: 'searching'))
+      accumulator.add(refs.call(%w[weather_lookup]))
+      accumulator.add(refs.call(%w[weather_lookup stock_price]))
+
+      message = accumulator.to_message(nil)
+      expect(message.tool_references).to eq(%w[weather_lookup stock_price])
+    end
+
+    it 'accumulates raw tool-search blocks onto the final message, in order' do
+      accumulator = described_class.new
+      srv = { 'type' => 'server_tool_use', 'id' => 'srv_1' }
+      result = { 'type' => 'tool_search_tool_result', 'tool_use_id' => 'srv_1' }
+
+      accumulator.add(RubyLLM::Chunk.new(role: :assistant, content: nil, tool_search_blocks: [srv]))
+      accumulator.add(RubyLLM::Chunk.new(role: :assistant, content: nil, tool_search_blocks: [result]))
+
+      expect(accumulator.to_message(nil).tool_search_blocks).to eq([srv, result])
+    end
+
     it 'handles tool call deltas that omit arguments' do
       accumulator = described_class.new
       tool_call = RubyLLM::ToolCall.new(id: 'call_1', name: 'weather', arguments: nil)

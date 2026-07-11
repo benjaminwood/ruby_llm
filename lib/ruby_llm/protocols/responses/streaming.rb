@@ -34,15 +34,27 @@ module RubyLLM
           return chunk unless item['type'] == 'function_call'
 
           chunk tool_calls: {
-            data['output_index'] => ToolCall.new(id: item['call_id'], name: item['name'], arguments: +'')
+            data['output_index'] => ToolCall.new(id: item['call_id'], name: item['name'], arguments: +'',
+                                                 namespace: item['namespace'])
           }
         end
 
         def build_item_done_chunk(data)
           item = data['item']
+          if Chat::TOOL_SEARCH_ITEM_TYPES.include?(item['type'])
+            return chunk(tool_references: tool_references_from_item(item), tool_search_blocks: [item])
+          end
           return chunk unless item['type'] == 'reasoning' && item['encrypted_content']
 
           chunk thinking: Thinking.build(text: nil, signature: item['encrypted_content'])
+        end
+
+        # The hosted tool search reports loaded tools on a tool_search_output
+        # item; surface their names as tool_references (and the raw item for
+        # history replay) so the streamed Message matches the non-streaming
+        # path (see Chat#parse_tool_references).
+        def tool_references_from_item(item)
+          Array(item['tools']).filter_map { |tool| tool['name'] }
         end
 
         def build_completed_chunk(data)

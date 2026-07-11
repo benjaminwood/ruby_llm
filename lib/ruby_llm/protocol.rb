@@ -77,6 +77,17 @@ module RubyLLM
       @model = model
     end
 
+    # Whether this protocol can defer tool definitions for +model+ so the
+    # model loads them on demand via a native tool-search mechanism, keeping
+    # large tool catalogs out of the context window. Protocols that implement
+    # the tool-search seam (rendering deferred tool entries plus their search
+    # primitive, and parsing loaded tools back into Message#tool_references)
+    # override this — usually gating on the model, since support is
+    # model-specific. The base implementation returns +false+.
+    def supports_deferred_tools?
+      false
+    end
+
     # rubocop:disable Metrics/ParameterLists
 
     def complete(messages, tools:, temperature:, provider_options: {}, headers: {}, schema: nil, thinking: nil,

@@ -36,8 +36,29 @@ module RubyLLM
             cache_read_tokens: extract_cache_read_tokens(data),
             cache_write_tokens: extract_cache_write_tokens(data),
             tool_calls: extract_tool_calls(data),
+            tool_references: extract_tool_references(data),
+            tool_search_blocks: extract_tool_search_blocks(data),
             finish_reason: data.dig('delta', 'stop_reason')
           )
+        end
+
+        # The server-side tool search surfaces discovered tools as a
+        # tool_search_tool_result content block, delivered whole in a
+        # content_block_start event. Reuse the non-streaming parser so the
+        # streamed Message carries the same tool_references.
+        def extract_tool_references(data)
+          return [] unless data['type'] == 'content_block_start'
+
+          Tools.find_tool_references([data['content_block']].compact)
+        end
+
+        # Raw tool-search blocks for history replay. A streamed
+        # server_tool_use block arrives with an empty input (the query streams
+        # separately); the API accepts the replayed block without it.
+        def extract_tool_search_blocks(data)
+          return [] unless data['type'] == 'content_block_start'
+
+          Tools.find_tool_search_blocks([data['content_block']].compact)
         end
 
         def extract_content_delta(data, delta_type)

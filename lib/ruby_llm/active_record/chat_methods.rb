@@ -362,6 +362,19 @@ module RubyLLM
         self
       end
 
+      # Registers a callback run when a provider's tool search discovers
+      # deferred tools. See RubyLLM::Chat#after_tool_search. Returns +self+.
+      def after_tool_search(...)
+        to_llm.after_tool_search(...)
+        self
+      end
+
+      # The deferred tools registered on this chat, as a
+      # RubyLLM::ToolCatalog. See RubyLLM::Chat#tool_catalog.
+      def tool_catalog
+        to_llm.tool_catalog
+      end
+
       # Registers a callback run before a fallback model is tried.
       # See RubyLLM::Chat#before_fallback. Returns +self+.
       def before_fallback(...)
@@ -682,6 +695,8 @@ module RubyLLM
         attrs[:thinking_signature] = message.thinking&.signature if @message.has_attribute?(:thinking_signature)
         attrs[:thinking_tokens] = message.thinking_tokens if @message.has_attribute?(:thinking_tokens)
         attrs[:citations] = message.citations.map(&:to_h).presence if @message.has_attribute?(:citations)
+        attrs[:tool_references] = message.tool_references.presence if @message.has_attribute?(:tool_references)
+        attrs[:tool_search_blocks] = message.tool_search_blocks.presence if @message.has_attribute?(:tool_search_blocks)
         attrs[:finish_reason] = message.finish_reason if @message.has_attribute?(:finish_reason)
         attrs[:cache_until_here] = message.cache_until_here? if @message.has_attribute?(:cache_until_here)
         model_record = current_llm_model_association(message)

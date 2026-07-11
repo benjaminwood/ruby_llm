@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'delegate'
 require 'schematist'
 
 module RubyLLM
@@ -195,6 +196,26 @@ module RubyLLM
         self
       end
 
+      # Defers every registration of this tool: its definition stays out of the
+      # model's context until the provider's tool search loads it, on providers
+      # and models that support tool search. Chat#with_tools with +defer:+
+      # overrides it per chat.
+      #
+      #   class DeepResearch < RubyLLM::Tool
+      #     description "Runs a multi-step investigation"
+      #     deferred
+      #   end
+      #
+      def deferred(value = true) # rubocop:disable Style/OptionalBooleanParameter
+        @deferred = value ? true : false
+        self
+      end
+
+      # Returns whether registrations of this tool defer by default.
+      def deferred?
+        @deferred == true
+      end
+
       def split_result(result) # :nodoc:
         case result
         when Attachment then ['', [result]]
@@ -256,6 +277,26 @@ module RubyLLM
     # Returns the provider-specific tool metadata declared on the class.
     def provider_options
       self.class.provider_options
+    end
+
+    # Returns whether this tool defers by default. See ::deferred.
+    def deferred?
+      self.class.deferred?
+    end
+
+    class Registration < SimpleDelegator # :nodoc:
+      def initialize(tool, deferred:)
+        super(tool)
+        @deferred = deferred
+      end
+
+      def deferred?
+        @deferred
+      end
+
+      def tool
+        __getobj__
+      end
     end
 
     # Returns the JSON Schema for the tool's arguments, whether declared

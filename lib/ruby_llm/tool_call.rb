@@ -32,12 +32,18 @@ module RubyLLM
     # RubyLLM replays it to the provider on later requests.
     attr_accessor :thought_signature
 
-    def initialize(id:, name:, arguments: {}, thought_signature: nil, remote: false) # :nodoc:
+    # The namespace a provider's tool search assigned when it discovered the
+    # tool, when the provider groups discovered tools. RubyLLM replays it to
+    # the provider on later requests.
+    attr_accessor :namespace
+
+    def initialize(id:, name:, arguments: {}, thought_signature: nil, remote: false, namespace: nil) # :nodoc:
       @id = id
       @name = name
       @arguments = arguments
       @thought_signature = thought_signature
       @remote = remote
+      @namespace = namespace
     end
 
     def inspect_attributes # :nodoc:
@@ -51,7 +57,8 @@ module RubyLLM
         name: @name,
         arguments: @arguments,
         remote: remote? || nil,
-        thought_signature: @thought_signature
+        thought_signature: @thought_signature,
+        namespace: @namespace
       }.compact
     end
   end

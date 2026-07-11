@@ -95,6 +95,12 @@ module RubyLLM
                   raw_content: render_tool_approval_response(tool_call, approved:))
     end
 
+    # Whether this protocol can send tool definitions deferred for the
+    # model's native tool search. Protocols that render one override it.
+    def supports_deferred_tools? # :nodoc:
+      false
+    end
+
     def complete(messages, tools:, temperature:, provider_options: {}, headers: {}, schema: nil, thinking: nil,
                  max_output_tokens: nil, citations: false, caching: nil, tool_prefs: nil, before_request: [],
                  usage_recorder: nil, provider_tools: [], compaction: nil, end_user: nil, &)

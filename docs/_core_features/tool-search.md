@@ -3,7 +3,7 @@ layout: default
 title: Tool Search
 parent: "Tools"
 nav_order: 5
-description: Keep large tool catalogs out of the model's context. Mark tools as deferred and let the provider's tool search load only the ones a conversation needs.
+description: Mark tools as deferred so the provider's tool search loads only the ones a conversation needs and large tool catalogs stay out of the model's context.
 redirect_from:
   - /guides/tool-search
 ---
@@ -43,7 +43,7 @@ Tool search addresses all three. You mark tools as **deferred**, and the provide
 Pass `defer: true` when registering tools:
 
 ```ruby
-chat = RubyLLM.chat(model: "claude-sonnet-4-6")
+chat = RubyLLM.chat(model: "{{ site.models.anthropic_current }}")
 chat.with_tools(*mcp_client.tools, defer: true)
 ```
 

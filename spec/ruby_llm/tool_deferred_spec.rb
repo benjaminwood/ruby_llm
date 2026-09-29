@@ -25,6 +25,16 @@ RSpec.describe RubyLLM::Tool do
       expect(FalseTool.deferred?).to be(false)
     end
 
+    it 'is inherited by subclasses, which may opt back out' do
+      stub_const('ParentTool', Class.new(described_class) { deferred })
+      stub_const('ChildTool', Class.new(ParentTool))
+      stub_const('EagerChildTool', Class.new(ParentTool) { deferred(false) })
+      expect(ChildTool.deferred?).to be(true)
+      expect(ChildTool.new.deferred?).to be(true)
+      expect(EagerChildTool.deferred?).to be(false)
+      expect(ParentTool.deferred?).to be(true)
+    end
+
     it 'does not propagate to unrelated classes' do
       stub_const('ParentTool', Class.new(described_class) { deferred })
       stub_const('SiblingTool', Class.new(described_class))

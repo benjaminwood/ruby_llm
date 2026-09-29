@@ -17,11 +17,13 @@ RSpec.describe RubyLLM::Protocols::Responses::Streaming do
     expect(chunk.tool_references).to eq(%w[weather_lookup stock_price])
   end
 
-  it 'keeps the namespace on a streamed function_call item' do
-    item = { 'type' => 'function_call', 'call_id' => 'c1', 'name' => 'weather_lookup', 'namespace' => 'functions' }
-    chunk = build_chunk({ 'type' => 'response.output_item.added', 'output_index' => 0, 'item' => item })
+  it 'keeps the raw output when a streamed function_call carries a tool-search namespace' do
+    item = { 'type' => 'function_call', 'call_id' => 'c1', 'name' => 'weather_lookup', 'arguments' => '{}',
+             'namespace' => 'functions' }
+    response = { 'output' => [item], 'status' => 'completed' }
+    chunk = build_chunk({ 'type' => 'response.completed', 'response' => response })
 
-    expect(chunk.tool_calls[0].namespace).to eq('functions')
+    expect(chunk.raw_content).to eq([item])
   end
 
   it 'streams output text deltas as content' do

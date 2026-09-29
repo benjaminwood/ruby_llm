@@ -129,8 +129,7 @@ module RubyLLM
             name: tc.name,
             arguments: arguments,
             thought_signature: tc.thought_signature,
-            remote: tc.remote?,
-            namespace: tc.namespace
+            remote: tc.remote?
           )
         end
       end
@@ -160,8 +159,7 @@ module RubyLLM
           name: tool_call.name,
           arguments: initial_tool_call_arguments(tool_call),
           thought_signature: tool_call.thought_signature,
-          remote: tool_call.remote?,
-          namespace: tool_call.namespace
+          remote: tool_call.remote?
         )
         @tool_call_ids_by_index[stream_key] = tool_call_id unless stream_key.nil?
         @latest_tool_call_id = tool_call_id

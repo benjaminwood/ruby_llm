@@ -949,7 +949,7 @@ module RubyLLM
 
     ##
     # :method: with_tools
-    # :call-seq: with_tools(*tools)
+    # :call-seq: with_tools(*tools, defer: nil)
     #
     # Delegates to Chat#with_tools. See that method for arguments and return values.
 

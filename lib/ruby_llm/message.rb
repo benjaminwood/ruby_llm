@@ -286,8 +286,7 @@ module RubyLLM
         attributes = call.transform_keys(&:to_sym)
         [id, ToolCall.new(id: attributes[:id] || id, name: attributes[:name],
                           arguments: attributes[:arguments] || {},
-                          thought_signature: attributes[:thought_signature], remote: attributes.fetch(:remote, false),
-                          namespace: attributes[:namespace])]
+                          thought_signature: attributes[:thought_signature], remote: attributes.fetch(:remote, false))]
       end
     end
 

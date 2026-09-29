@@ -70,7 +70,7 @@ module RubyLLM
             ),
             tool_calls: parse_pending_tool_calls(output, response: raw, finish_reason: finish_reason),
             server_tool_calls: server_tool_calls,
-            raw_content: server_tool_calls.any? ? output : nil,
+            raw_content: keep_raw_output?(output, server_tool_calls) ? output : nil,
             tool_references: parse_tool_references(output),
             model: data['model'],
             raw: raw,
@@ -108,6 +108,13 @@ module RubyLLM
 
         CLIENT_OUTPUT_ITEM_TYPES = %w[message reasoning function_call].freeze
         TOOL_SEARCH_ITEM_TYPES = %w[tool_search_call tool_search_output].freeze
+
+        # A function call the model reached through tool search carries the
+        # namespace the API assigned it and expects back, so such a turn is
+        # kept raw and replayed whole, like a server-tool turn.
+        def keep_raw_output?(output, server_tool_calls)
+          server_tool_calls.any? || output.any? { |item| item['type'] == 'function_call' && item['namespace'] }
+        end
 
         def parse_tool_references(output)
           output.select { |item| item['type'] == 'tool_search_output' }.flat_map do |item|
@@ -375,14 +382,12 @@ module RubyLLM
 
         def format_function_call_items(tool_calls)
           tool_calls.map do |_, tc|
-            item = {
+            {
               type: 'function_call',
               call_id: tc.id,
               name: tc.name,
               arguments: JSON.generate(tc.arguments)
             }
-            item[:namespace] = tc.namespace if tc.namespace
-            item
           end
         end
 
@@ -430,8 +435,7 @@ module RubyLLM
               ToolCall.new(
                 id: call['call_id'],
                 name: call['name'],
-                arguments: parse_function_call_arguments(arguments, response: response, finish_reason: finish_reason),
-                namespace: call['namespace']
+                arguments: parse_function_call_arguments(arguments, response: response, finish_reason: finish_reason)
               )
             ]
           end

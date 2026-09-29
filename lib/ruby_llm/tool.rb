@@ -50,6 +50,7 @@ module RubyLLM
       @parameters_schema_definition
       @requires_approval
       @approval_resolver
+      @deferred
     ].freeze
     private_constant :DUPED_INHERITED_CONFIG, :COPIED_INHERITED_CONFIG
 

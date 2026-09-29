@@ -74,8 +74,7 @@ module RubyLLM
           return chunk unless item['type'] == 'function_call'
 
           chunk tool_calls: {
-            data['output_index'] => ToolCall.new(id: item['call_id'], name: item['name'], arguments: +'',
-                                                 namespace: item['namespace'])
+            data['output_index'] => ToolCall.new(id: item['call_id'], name: item['name'], arguments: +'')
           }
         end
 
@@ -97,7 +96,7 @@ module RubyLLM
                 finish_reason: parse_finish_reason(response),
                 citations: parse_citations(response, output, nil),
                 server_tool_calls: server_tool_calls,
-                raw_content: server_tool_calls.any? ? output : nil,
+                raw_content: keep_raw_output?(output, server_tool_calls) ? output : nil,
                 **parse_usage(response['usage'] || {})
         end
 

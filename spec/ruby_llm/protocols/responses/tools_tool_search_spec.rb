@@ -59,22 +59,31 @@ RSpec.describe RubyLLM::Protocols::Responses::Tools do
     end
   end
 
-  describe 'function_call namespace round-trip (discovered tools carry one)' do
+  describe 'a function call the model reached through tool search' do
     let(:chat_protocol) { RubyLLM::Protocols::Responses::Chat }
-
-    it 'parses the namespace from a function_call item and replays it' do
-      output = [{ 'type' => 'function_call', 'call_id' => 'c1', 'name' => 'weather_lookup',
-                  'arguments' => '{}', 'namespace' => 'functions' }]
-      calls = chat_protocol.parse_function_calls(output)
-      expect(calls['c1'].namespace).to eq('functions')
-
-      items = chat_protocol.format_function_call_items(calls)
-      expect(items.first[:namespace]).to eq('functions')
+    let(:call) do
+      { 'type' => 'function_call', 'call_id' => 'c1', 'name' => 'weather_lookup', 'arguments' => '{}',
+        'namespace' => 'functions' }
     end
 
-    it 'omits the namespace key for ordinary calls' do
-      calls = { 'c1' => RubyLLM::ToolCall.new(id: 'c1', name: 'plain', arguments: {}) }
-      expect(chat_protocol.format_function_call_items(calls).first).not_to have_key(:namespace)
+    def parse(output)
+      data = { 'output' => output, 'model' => 'gpt-5.4', 'status' => 'completed', 'usage' => {} }
+      RubyLLM::Protocols::Responses.allocate.send(:parse_completion_body, data, raw: nil)
+    end
+
+    it 'keeps the raw output, so the namespace the API assigned is replayed with the call' do
+      message = parse([call])
+
+      expect(message.raw_content).to eq([call])
+      expect(message.tool_calls['c1'].to_h).not_to have_key(:namespace)
+      expect(chat_protocol.format_assistant_items(message)).to eq([call])
+    end
+
+    it 'leaves an ordinary function call to the plain replay' do
+      message = parse([call.except('namespace')])
+
+      expect(message.raw_content).to be_nil
+      expect(chat_protocol.format_function_call_items(message.tool_calls).first).not_to have_key(:namespace)
     end
   end
 

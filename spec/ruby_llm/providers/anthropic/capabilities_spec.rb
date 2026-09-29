@@ -32,6 +32,14 @@ RSpec.describe RubyLLM::Providers::Anthropic::Capabilities do
     expect(capabilities).to be_empty
   end
 
+  it 'emits only capabilities the registry schema accepts, so rake models validates the refreshed registry' do
+    capabilities = described_class.augment(%w[function_calling], model_id: 'claude-haiku-4-5',
+                                                                 modalities: { output: ['text'] })
+
+    expect(capabilities).to include('tool_search')
+    expect(capabilities - RubyLLM::Models::Schema::CAPABILITIES).to be_empty
+  end
+
   it 'does not change the source capability list' do
     original = ['function_calling'].freeze
 

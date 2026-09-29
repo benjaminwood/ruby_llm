@@ -1,0 +1,73 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe RubyLLM::Chat, :live do
+  include_context 'with configured RubyLLM'
+
+  class WeatherLookup < RubyLLM::Tool # rubocop:disable Lint/ConstantDefinitionInBlock,RSpec/LeakyConstantDeclaration
+    description 'Looks up the current weather for a city'
+    parameter :city, description: 'City name'
+
+    def execute(city:)
+      "Sunny and 22°C in #{city}"
+    end
+  end
+
+  class StockPrice < RubyLLM::Tool # rubocop:disable Lint/ConstantDefinitionInBlock,RSpec/LeakyConstantDeclaration
+    description 'Looks up the current price of a stock ticker'
+    parameter :ticker, description: 'Ticker symbol'
+
+    def execute(ticker:)
+      "#{ticker} is trading at 100"
+    end
+  end
+
+  describe 'deferred tools' do
+    each_model(TOOL_SEARCH_MODELS) do |provider, model|
+      context "with #{provider}/#{model}" do
+        # The registry gains tool_search on its next refresh; until then the
+        # capability is granted to the chat's model directly.
+        let(:chat) do
+          grant_tool_search(RubyLLM.chat(model: model, provider: provider))
+            .with_tools(WeatherLookup, StockPrice, defer: true)
+        end
+
+        def loaded_tools(chat)
+          chat.messages.flat_map(&:tool_references)
+        end
+
+        def called_tools(chat)
+          chat.messages.select(&:tool_call?).flat_map { |message| message.tool_calls.values.map(&:name) }
+        end
+
+        it 'loads a deferred tool through tool search and calls it' do
+          response = chat.ask('What is the weather in Berlin right now? Use your tools.')
+
+          expect(response.content).to include('22')
+          expect(loaded_tools(chat)).to include('weather_lookup')
+          expect(called_tools(chat)).to include('weather_lookup')
+        end
+
+        it 'keeps using a loaded tool on the next turn' do
+          chat.ask('What is the weather in Berlin right now? Use your tools.')
+
+          response = chat.ask('And in Paris?')
+
+          expect(response.content).to include('22')
+          expect(called_tools(chat).count('weather_lookup')).to eq(2)
+        end
+
+        it 'loads a deferred tool while streaming' do
+          chunks = []
+
+          response = chat.ask('What is the weather in Berlin right now? Use your tools.') { |chunk| chunks << chunk }
+
+          expect(response.content).to include('22')
+          expect(loaded_tools(chat)).to include('weather_lookup')
+          expect(called_tools(chat)).to include('weather_lookup')
+        end
+      end
+    end
+  end
+end

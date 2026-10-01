@@ -17,10 +17,10 @@ module RubyLLM
 
         # rubocop:disable-next Metrics/PerceivedComplexity
         def render_payload(messages, tools:, temperature:, model:, stream: false, max_output_tokens: nil, schema: nil,
-                           thinking: nil, citations: false, caching: nil, tool_prefs: nil)
+                           thinking: nil, citations: false, caching: nil, tool_prefs: nil, provider_tools: [])
           warn_unsupported_citations(model) if citations && !model.supports?(:citations)
           tool_prefs ||= {}
-          replay_search = tools.any? { |_, tool| Tools.deferred?(tool) }
+          replay_search = Tools.replay_search?(tools, provider_tools)
           # store: false leaves the provider holding no state, so reasoning has
           # to ride back in the response. xAI only encrypts it when asked.
           payload = {
@@ -109,9 +109,6 @@ module RubyLLM
         CLIENT_OUTPUT_ITEM_TYPES = %w[message reasoning function_call].freeze
         TOOL_SEARCH_ITEM_TYPES = %w[tool_search_call tool_search_output].freeze
 
-        # A function call the model reached through tool search carries the
-        # namespace the API assigned it and expects back, so such a turn is
-        # kept raw and replayed whole, like a server-tool turn.
         def keep_raw_output?(output, server_tool_calls)
           server_tool_calls.any? || output.any? { |item| item['type'] == 'function_call' && item['namespace'] }
         end

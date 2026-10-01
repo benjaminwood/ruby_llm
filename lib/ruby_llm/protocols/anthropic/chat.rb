@@ -35,12 +35,13 @@ module RubyLLM
         end
 
         def render_payload(messages, tools:, temperature:, model:, stream: false, max_output_tokens: nil,
-                           schema: nil, thinking: nil, citations: false, caching: nil, tool_prefs: nil)
+                           schema: nil, thinking: nil, citations: false, caching: nil, tool_prefs: nil,
+                           provider_tools: [])
           warn_unsupported_citations(model) if citations && !model.supports?(:citations)
           tool_prefs ||= {}
           system_messages, chat_messages = separate_messages(messages)
           system_content = build_system_content(system_messages, caching:)
-          replay_search = tools.values.any? { |tool| Tools.deferred?(tool) }
+          replay_search = Tools.replay_search?(tools, provider_tools)
 
           build_base_payload(chat_messages, model, stream, thinking, citations: citations, caching:,
                                                                      max_output_tokens:,

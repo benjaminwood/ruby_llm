@@ -103,6 +103,11 @@ module RubyLLM
           tool.is_a?(RubyLLM::Tool::Registration) && tool.deferred?
         end
 
+        def replay_search?(tools, provider_tools)
+          tools.values.any? { |tool| deferred?(tool) } ||
+            provider_tools.any? { |entry| (entry[:type] || entry['type']).to_s.start_with?('tool_search_tool_') }
+        end
+
         def extract_tool_calls(data)
           if json_delta?(data)
             extract_tool_call_delta(data)

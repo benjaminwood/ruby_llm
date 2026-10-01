@@ -70,7 +70,7 @@ http_interactions:
       Anthropic-Organization-Id:
       - "<ANTHROPIC_ORGANIZATION_ID>"
       Anthropic-Workspace-Id:
-      - wrkspc_01VDJoH5f7BLtTr7GXhfnxDX
+      - <ANTHROPIC_WORKSPACE_ID>
       Traceresponse:
       - 00-8aa921a579da3df9fbe209d8e9654042-4b5acb7820e85609-01
       Vary:
@@ -166,7 +166,7 @@ http_interactions:
       Anthropic-Organization-Id:
       - "<ANTHROPIC_ORGANIZATION_ID>"
       Anthropic-Workspace-Id:
-      - wrkspc_01VDJoH5f7BLtTr7GXhfnxDX
+      - <ANTHROPIC_WORKSPACE_ID>
       Traceresponse:
       - 00-851802881fc51cbd0cc0b2c407034b7d-805f1517ac1cf078-01
       Vary:
@@ -261,7 +261,7 @@ http_interactions:
       Anthropic-Organization-Id:
       - "<ANTHROPIC_ORGANIZATION_ID>"
       Anthropic-Workspace-Id:
-      - wrkspc_01VDJoH5f7BLtTr7GXhfnxDX
+      - <ANTHROPIC_WORKSPACE_ID>
       Traceresponse:
       - 00-d8583591744361c4596975931981867e-9a5acc9a40ab26d7-01
       Vary:
@@ -356,7 +356,7 @@ http_interactions:
       Anthropic-Organization-Id:
       - "<ANTHROPIC_ORGANIZATION_ID>"
       Anthropic-Workspace-Id:
-      - wrkspc_01VDJoH5f7BLtTr7GXhfnxDX
+      - <ANTHROPIC_WORKSPACE_ID>
       Traceresponse:
       - 00-fa915e1b2e76f04daafd47f241af3d87-0e99ab4dbdcb62be-01
       Vary:

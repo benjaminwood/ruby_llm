@@ -205,6 +205,37 @@ RSpec.describe RubyLLM::Agent do
     end
   end
 
+  describe 'tools with defer:' do
+    let(:echo_tool) do
+      Class.new(RubyLLM::Tool) do
+        def self.tool_name = 'echo'
+        def execute = 'echo'
+      end
+    end
+
+    def agent_with_tools(tool, **options)
+      Class.new(described_class) do
+        model model_for(:openai, :temperature), provider: :openai
+        tools tool, **options
+      end
+    end
+
+    it 'defers the declared tools on the chat it builds' do
+      chat = agent_with_tools(echo_tool, defer: true).chat
+
+      expect(chat.tools.keys).to eq([:echo])
+      expect(chat.tool_catalog).to be_deferred(:echo)
+    end
+
+    it 'registers them as ordinary tools by default' do
+      expect(agent_with_tools(echo_tool).chat.tool_catalog).to be_empty
+    end
+
+    it 'inherits the setting' do
+      expect(Class.new(agent_with_tools(echo_tool, defer: true)).chat.tool_catalog).to be_deferred(:echo)
+    end
+  end
+
   describe 'deferred configuration blocks' do
     it 'evaluates caching, provider options and headers when the chat is built' do
       agent = Class.new(described_class) do

@@ -77,8 +77,7 @@ module RubyLLM
     # +nil+ when the provider returned none.
     attr_reader :raw_reasoning # :nodoc:
 
-    # The names of the deferred tools a provider's tool search loaded for
-    # this message. Chat records them on its catalog.
+    # The deferred tools the provider's tool search loaded for this message.
     attr_reader :tool_references # :nodoc:
 
     # The Chat this message belongs to, set when it is added to a

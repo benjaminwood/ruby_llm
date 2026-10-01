@@ -92,7 +92,8 @@ RSpec.describe RubyLLM::Protocols::Responses::Tools do
     let(:items) do
       [{ 'type' => 'tool_search_call', 'id' => 'ts_1' },
        { 'type' => 'tool_search_output', 'tools' => [{ 'name' => 'weather_lookup' }] },
-       { 'type' => 'function_call', 'call_id' => 'c1', 'name' => 'weather_lookup', 'arguments' => '{}' }]
+       { 'type' => 'function_call', 'call_id' => 'c1', 'name' => 'weather_lookup', 'arguments' => '{}',
+         'namespace' => 'functions' }]
     end
     let(:message) do
       RubyLLM::Message.new(
@@ -106,16 +107,38 @@ RSpec.describe RubyLLM::Protocols::Responses::Tools do
       expect(types).to eq(%w[tool_search_call tool_search_output function_call])
     end
 
-    it 'omits the search items when the request no longer carries deferred tools' do
-      types = protocol.send(:format_assistant_items, message, replay_search: false).map { |i| i['type'] }
-      expect(types).to eq(%w[function_call])
+    it 'omits the search items when the request no longer carries deferred tools, keeping the namespaced call' do
+      replayed = protocol.send(:format_assistant_items, message, replay_search: false)
+
+      expect(replayed).to eq([items.last])
+      expect(replayed.first['namespace']).to eq('functions')
+    end
+
+    describe 'from render_payload' do
+      let(:model) { instance_double(RubyLLM::Model, id: 'gpt-5.4', supports?: false, reasoning_option: nil) }
+
+      def replayed_types(tools, provider_tools: [])
+        payload = protocol.send(:render_payload, [message],
+                                tools: tools, temperature: nil, model: model, provider_tools: provider_tools)
+        payload[:input].map { |item| item['type'] }
+      end
+
+      it 'keeps the search items while a deferred tool is rendered and strips them otherwise' do
+        expect(replayed_types({ a: tool('a', deferred: true) })).to include('tool_search_call')
+        expect(replayed_types({ a: tool('a', deferred: false) })).not_to include('tool_search_call')
+      end
+
+      it 'keeps the search items while the tool_search provider tool is configured' do
+        expect(replayed_types({}, provider_tools: [{ type: 'tool_search' }])).to include('tool_search_call')
+        expect(replayed_types({}, provider_tools: [{ type: 'web_search' }])).not_to include('tool_search_call')
+      end
     end
   end
 
   describe 'end-to-end request payload via Chat#render' do
     include_context 'with configured RubyLLM'
 
-    let(:chat) { grant_tool_search(RubyLLM::Chat.new(model: 'gpt-5.4', provider: :openai)) }
+    let(:chat) { RubyLLM::Chat.new(model: 'gpt-5.4', provider: :openai) }
 
     before do
       stub_const('WeatherLookupTool', Class.new(RubyLLM::Tool) do

@@ -72,7 +72,7 @@ http_interactions:
       Anthropic-Organization-Id:
       - "<ANTHROPIC_ORGANIZATION_ID>"
       Anthropic-Workspace-Id:
-      - wrkspc_01VDJoH5f7BLtTr7GXhfnxDX
+      - <ANTHROPIC_WORKSPACE_ID>
       Content-Security-Policy:
       - default-src 'none'; frame-ancestors 'none'
       Vary:
@@ -277,7 +277,7 @@ http_interactions:
       Anthropic-Organization-Id:
       - "<ANTHROPIC_ORGANIZATION_ID>"
       Anthropic-Workspace-Id:
-      - wrkspc_01VDJoH5f7BLtTr7GXhfnxDX
+      - <ANTHROPIC_WORKSPACE_ID>
       Traceresponse:
       - 00-62e165009ce9f5dd4a3e11eeea30aa52-6de07b8eca4ac3c8-01
       Vary:

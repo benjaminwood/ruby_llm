@@ -26,12 +26,7 @@ RSpec.describe RubyLLM::Chat, :live do
   describe 'deferred tools' do
     each_model(TOOL_SEARCH_MODELS) do |provider, model|
       context "with #{provider}/#{model}" do
-        # The registry gains tool_search on its next refresh; until then the
-        # capability is granted to the chat's model directly.
-        let(:chat) do
-          grant_tool_search(RubyLLM.chat(model: model, provider: provider))
-            .with_tools(WeatherLookup, StockPrice, defer: true)
-        end
+        let(:chat) { RubyLLM.chat(model: model, provider: provider).with_tools(WeatherLookup, StockPrice, defer: true) }
 
         def loaded_tools(chat)
           chat.messages.flat_map(&:tool_references)

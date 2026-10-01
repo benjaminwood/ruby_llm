@@ -135,19 +135,30 @@ RSpec.describe RubyLLM::Protocols::Anthropic::Tools do
       expect(message.raw_content.size).to eq(5)
     end
 
-    it 'derives replay from the rendered tools: deferred present keeps the pair, absent strips it' do
-      chat_module = RubyLLM::Protocols::Anthropic::Chat
-      model = instance_double(RubyLLM::Model, id: 'claude-haiku-4-5', max_output_tokens: 100,
-                                              supports?: false, reasoning_option: nil)
-      render = lambda do |tools|
-        chat_module.render_payload([message], tools: tools, temperature: nil, model: model)
+    describe 'from render_payload' do
+      let(:model) do
+        instance_double(RubyLLM::Model, id: 'claude-haiku-4-5', max_output_tokens: 100,
+                                        supports?: false, reasoning_option: nil)
       end
 
-      with_deferred = render.call(a: tool('a', deferred: true))
-      without = render.call(a: tool('a', deferred: false))
+      def replayed_types(tools, provider_tools: [])
+        payload = RubyLLM::Protocols::Anthropic::Chat.render_payload([message], tools: tools, temperature: nil,
+                                                                                model: model, provider_tools:)
+        payload[:messages].first[:content].map { |b| b['type'] }
+      end
 
-      expect(with_deferred[:messages].first[:content].map { |b| b['type'] }).to include('tool_search_tool_result')
-      expect(without[:messages].first[:content].map { |b| b['type'] }).not_to include('tool_search_tool_result')
+      it 'keeps the pair while a deferred tool is rendered and strips it otherwise' do
+        expect(replayed_types({ a: tool('a', deferred: true) })).to include('tool_search_tool_result')
+        expect(replayed_types({ a: tool('a', deferred: false) })).not_to include('tool_search_tool_result')
+      end
+
+      it 'keeps the pair while a tool-search provider tool is configured' do
+        regex = { type: 'tool_search_tool_regex_20251119', name: 'tool_search_tool_regex' }
+        web_search = { type: 'web_search_20260318', name: 'web_search' }
+
+        expect(replayed_types({}, provider_tools: [regex])).to include('tool_search_tool_result')
+        expect(replayed_types({}, provider_tools: [web_search])).not_to include('tool_search_tool_result')
+      end
     end
   end
 
@@ -189,7 +200,7 @@ RSpec.describe RubyLLM::Protocols::Anthropic::Tools do
   describe 'end-to-end request payload via Chat#render' do
     include_context 'with configured RubyLLM'
 
-    let(:chat) { grant_tool_search(RubyLLM::Chat.new(model: 'claude-haiku-4-5', provider: :anthropic)) }
+    let(:chat) { RubyLLM::Chat.new(model: 'claude-haiku-4-5', provider: :anthropic) }
 
     before do
       stub_const('WeatherLookupTool', Class.new(RubyLLM::Tool) do

@@ -200,9 +200,6 @@ module RubyLLM
       )
     end
 
-    # Whether the protocol this provider would use for +model+ (honoring an
-    # explicit <tt>protocol:</tt> override) can defer tool definitions for
-    # on-demand loading. Chat consults this before deferring tools.
     def supports_deferred_tools?(model, protocol: nil) # :nodoc:
       resolve_protocol(
         protocol, model, tools: {}, schema: nil, thinking: nil, tool_prefs: nil, citations: false

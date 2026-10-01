@@ -95,8 +95,6 @@ module RubyLLM
                   raw_content: render_tool_approval_response(tool_call, approved:))
     end
 
-    # Whether this protocol can send tool definitions deferred for the
-    # model's native tool search. Protocols that render one override it.
     def supports_deferred_tools? # :nodoc:
       false
     end
@@ -130,6 +128,7 @@ module RubyLLM
     def render(messages, tools:, temperature:, provider_options: {}, schema: nil, thinking: nil,
                max_output_tokens: nil, citations: false, caching: nil, tool_prefs: nil, before_request: [],
                stream: false, provider_tools: [], compaction: nil, end_user: nil)
+      resolution = resolve_provider_tools_for_request(provider_tools)
       payload = render_payload(
         messages,
         tools: tools,
@@ -141,12 +140,13 @@ module RubyLLM
         schema: schema,
         thinking: thinking,
         citations: citations,
-        caching: caching
+        caching: caching,
+        provider_tools: resolution ? resolution.tools : []
       )
       payload = apply_end_user(payload, end_user) if end_user
       payload = apply_compaction(payload, compaction) if compaction
       payload = Support::Utils.deep_merge(payload, provider_options)
-      payload = apply_provider_tools(payload, provider_tools)
+      payload = apply_provider_tools(payload, resolution)
       apply_before_request_hooks(payload, before_request)
     rescue NotImplementedError
       raise Error, "#{@provider.name} doesn't support chat"
@@ -536,8 +536,7 @@ module RubyLLM
       RubyLLM::Tools::ProviderTools.resolve(entries, aliases: aliases, owner: @provider.name)
     end
 
-    def apply_provider_tools(payload, entries)
-      resolution = resolve_provider_tools_for_request(entries)
+    def apply_provider_tools(payload, resolution)
       return payload unless resolution
 
       payload = Support::Utils.deep_merge(payload, resolution.payload) unless resolution.payload.empty?

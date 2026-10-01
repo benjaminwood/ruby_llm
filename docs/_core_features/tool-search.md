@@ -24,33 +24,26 @@ redirect_from:
 
 After reading this guide, you will know:
 
-*   When deferred tool loading helps.
 *   How to mark tools as deferred.
-*   Which providers support it and what happens on the others.
+*   Which providers and models support tool search, and what happens elsewhere.
 
-## When to use it
+## Deferring tools
 
-When a chat is wired to many tools, every tool's full JSON Schema ships on every request. Three costs follow:
-
-1. **Token bloat.** Hundreds of tools can add tens of thousands of tokens per request.
-2. **Prompt-cache eviction.** Adding or removing tools changes the request prefix and invalidates the cache.
-3. **Selection accuracy.** Models choose worse tools when the menu is long.
-
-Tool search addresses all three. You mark tools as **deferred**, and the provider keeps their schemas out of the model's context until its tool search loads the ones the conversation actually needs. The API below is the same whichever provider you use.
-
-## Marking tools as deferred
+Every tool a chat registers ships its full schema on every request. With dozens of tools that costs tokens, invalidates the prompt cache whenever the set changes, and makes the model choose worse. A deferred tool stays out of the model's context until the provider's tool search finds it, and the model then calls it like any other tool.
 
 Pass `defer: true` when registering tools:
 
 ```ruby
+files = RubyLLM.mcp(command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."])
+
 chat = RubyLLM.chat(model: "{{ site.models.anthropic_current }}")
-chat.with_tools(*mcp_client.tools, defer: true)
+chat.with_tools(*files.tools, defer: true)
 ```
 
-Or declare it once on a tool that should always be deferred:
+Or declare it on a tool that should always be deferred:
 
 ```ruby
-class DeepResearchTool < RubyLLM::Tool
+class DeepResearch < RubyLLM::Tool
   description "Runs a multi-step web investigation"
   deferred
 
@@ -61,33 +54,28 @@ class DeepResearchTool < RubyLLM::Tool
   end
 end
 
-chat.with_tools(DeepResearchTool)
+chat.with_tools(DeepResearch)
 ```
 
-`defer: true` on `with_tools` overrides a tool that is not declared `deferred`, and `defer: false` overrides one that is.
+`defer: true` also defers tools that are not declared `deferred`, and `defer: false` registers a `deferred` tool as an ordinary one.
 
-## How the model loads deferred tools
+Agents take the same option:
 
-Every request sends the same tools array: each deferred tool with the provider's defer flag, plus that provider's tool-search primitive. Because the array never changes between turns, the provider's prompt cache is preserved, which is the point of the feature.
-
-When the model searches and finds a tool, the provider reports it back, and RubyLLM replays the search exchange from the transcript on later requests, so the model keeps using found tools without searching again. A found tool executes exactly like any other tool.
+```ruby
+class Researcher < RubyLLM::Agent
+  model "{{ site.models.anthropic_current }}"
+  tools SearchDocs, LookupAccount, defer: true
+end
+```
 
 ## Provider support
 
-| Provider | Protocol | Deferred loading |
-|----------|----------|------------------|
-| Anthropic | `:anthropic` | Native, on the models Anthropic lists for its tool search tool (Claude 4.5 and later) |
-| OpenAI | `:responses` (the default) | Native, on gpt-5.4 and later |
-| OpenAI | `:chat_completions` | Not supported |
-| Everyone else (Gemini, Bedrock, Mistral, ...) | | Not supported |
+| Provider | Models |
+|----------|--------|
+| Anthropic | Claude Haiku 4.5, Sonnet 4.5, Opus 4.5 and later |
+| OpenAI | gpt-5.4 and later, through the Responses API |
 
-Support is resolved per model on every request. When the current provider or model has no native tool search, deferred tools go out as ordinary tools, so the same code runs everywhere and switching models mid-chat, including automatic fallbacks, needs no changes.
-
-Two Anthropic constraints are handled for you: the native search tool is always sent non-deferred, so a chat whose tools are all deferred still works, and combining `defer:` with a tool's `cache_control` raises an `ArgumentError` instead of a provider error.
-
-## Rails persistence
-
-The search exchange rides the message's `raw_content`, the same mechanism that replays provider tools such as web search, so with the 2.0 schema it is persisted with the conversation and found tools stay found across process restarts. It is replayed only while the request still declares deferred tools; otherwise the search blocks are dropped and the model searches again.
+Support is checked per model on every request. Elsewhere, including OpenAI's Chat Completions API, deferred tools go out as ordinary tools, so the same code runs on every provider and switching models mid-chat needs no changes.
 
 ## Further reading
 

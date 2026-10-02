@@ -46,7 +46,6 @@ The pitch is the public API. Every change is judged against four things, in this
 
 ## Ground rules
 
-- New features need an approved GitHub issue before any code. PRs without one get closed without review.
 - Never edit generated files: `lib/ruby_llm/models.json`, `lib/ruby_llm/aliases.json`, `docs/_reference/available-models.md`. `rake models` regenerates them.
 - Never invent model ids. Every model name in code, specs, and docs must be a real, callable model. Check with `RubyLLM.models.find`.
 - Keep diffs small and focused. No drive-by refactors, no style sweeps outside the lines you touch.
@@ -73,6 +72,7 @@ overcommit --install   # required: installs the git hooks that gate every commit
 | `bundle exec rubocop` | Lint (auto-corrects on commit). |
 | `bundle exec archspec check` | Architecture rules from `Archspec.rb`. |
 | `bundle exec rake conformance` | The official MCP client conformance suite against `RubyLLM::MCP` (needs Node). |
+| `bundle exec rake benchmark` | RubyLLM's own overhead, offline; `rake "benchmark:compare[v2.0.0]"` compares against another ref. |
 | `bundle exec appraisal rails-8.0 rspec` | Rails version matrix (7.1 through 8.1, see `Appraisals`). |
 | `docs/bin/serve.sh` | Docs preview at localhost:4002. |
 
@@ -90,6 +90,7 @@ overcommit --install   # required: installs the git hooks that gate every commit
 - **Remote approvals use a predicate.** A tool call's `remote?` distinguishes provider-executed tools from local Ruby tools. Persist that boolean; its call ID identifies the approval request. Do not use a provider's server label as the execution-mode flag.
 - **Save file and media results consistently.** Complete downloadable results expose `save(path)`, returning the path, and `to_blob` for their bytes. Show `RubyLLM.speak(...).save(path)` and equivalent calls before manual file writing. Streaming is optional; when an operation also returns its complete result, that result keeps the same saving API.
 - **Errors take the message first** and the response as a keyword: `Error.new("msg", response: response)`.
+- **Let the provider reject what the model can't do.** Raise before a request only when the protocol cannot express it, such as an operation the provider lacks or an attachment its wire format cannot carry. Don't check model capabilities, provider limits, or option values the API validates itself: its error is current, and a copy in RubyLLM goes stale. Don't silently downgrade an explicit request either. Trust the shape of a successful response; one rescue that turns a malformed body into a RubyLLM error is enough. Do check what maps a response back onto your inputs, such as indices, IDs, and positions: a wrong mapping corrupts results silently.
 - **Public means documented.** RDoc on the method, an example in `docs/`, and `:nodoc:` on everything that is internal.
 
 ## Boundaries (enforced by Archspec.rb)
@@ -110,7 +111,7 @@ When you find provider vocabulary in the wrong layer, move it and add the rule t
 ## Rails integration rules
 
 - A persisted chat behaves like a plain chat. Whatever `Chat` can do, `acts_as_chat` records do through the same names, and `Agent.find` gives back the record with the agent's tools, instructions, and options applied.
-- RubyLLM owns `ruby_llm_models`, `ruby_llm_tool_calls`, `ruby_llm_usages`, `ruby_llm_batches`, and `ruby_llm_mcp_credentials`. Applications own chats and messages. Schema changes go through the install generator for new apps and the upgrade generator for apps on the last release; both must move together in the same change. The upgrade generator carries only the changes since the last release. Replace it each release instead of accumulating upgrade templates, and point apps on older releases to the upgrade guide in that release's documentation.
+- RubyLLM owns `ruby_llm_models`, `ruby_llm_tool_calls`, `ruby_llm_usages`, `ruby_llm_batches`, `ruby_llm_mcp_credentials`, and `ruby_llm_provider_files`. Applications own chats and messages. Schema changes go through the install generator for new apps and the upgrade generator for apps on the last release; both must move together in the same change. The upgrade generator carries only the changes since the last release. Replace it each release instead of accumulating upgrade templates, and point apps on older releases to the upgrade guide in that release's documentation.
 - Persisted usage entries require both a provider and a model ID, with presence validation and `NOT NULL` constraints. Never invent a model to satisfy a migration. Existing rows without a model must be corrected from their original requests before upgrading. A standalone model-free operation may report usage without persisting it into a chat's ledger.
 - Persistence must survive other processes: cancellation, approvals, and the loop verbs read and write the database, and anything polled inside a job runs outside the query cache.
 - Generators write what a Rails scaffold would: omakase style, conventional paths, no starter prose, no TODO comments beyond the one place the developer has to type. An empty prompt file means no instructions.

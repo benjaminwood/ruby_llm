@@ -6,6 +6,8 @@ require 'ruby_llm/error'
 module RubyLLM
   module Transport # :nodoc:
     class ErrorMiddleware < Faraday::Middleware # :nodoc: all
+      PROVIDER_KEY = :ruby_llm_provider
+
       def initialize(app, options = {})
         super(app)
         @provider = options[:provider]
@@ -17,9 +19,10 @@ module RubyLLM
       def call(env)
         env[:streaming_error_response] = nil
         env[:streaming_state] = nil
+        provider = env[:request]&.context&.[](PROVIDER_KEY) || @provider
         @app.call(env).on_complete do |response|
-          apply_retry_delay(response)
-          self.class.parse_error(provider: @provider, response: streaming_error_response(response))
+          apply_retry_delay(response, provider)
+          self.class.parse_error(provider:, response: streaming_error_response(response))
         end
       end
 
@@ -27,19 +30,19 @@ module RubyLLM
 
       # The retry middleware only reads the standard Retry-After header, so
       # other retry hints are normalized into seconds here.
-      def apply_retry_delay(response)
+      def apply_retry_delay(response, provider)
         status = response.respond_to?(:status) ? response.status : response[:status]
         return unless status && status >= 400
 
         headers = response[:response_headers]
         return unless headers && !headers['Retry-After']
 
-        delay = millisecond_retry_delay(headers) || provider_retry_delay(response, status)
+        delay = millisecond_retry_delay(headers) || provider_retry_delay(provider, response, status)
         headers['Retry-After'] = delay.to_s if delay
       end
 
-      def provider_retry_delay(response, status)
-        @provider&.retry_delay(response) if status == 429
+      def provider_retry_delay(provider, response, status)
+        provider&.retry_delay(response) if status == 429
       end
 
       def millisecond_retry_delay(headers)
@@ -86,12 +89,16 @@ module RubyLLM
           /currently overloaded/i
         ].freeze
 
+        PAYMENT_REQUIRED_PATTERNS = [
+          /credit balance is too low/i
+        ].freeze
+
         def parse_error(provider:, response:)
+          return if (200..399).cover?(response.status)
+
           message = provider&.parse_error(response)
 
           case response.status
-          when 200..399
-            message
           when 400
             raise_bad_request(message, response)
           when 401
@@ -121,6 +128,7 @@ module RubyLLM
         def raise_bad_request(message, response)
           raise ContextLengthExceededError.new(message, response:) if context_length_exceeded?(message)
           raise OverloadedError.new(message, response:) if overloaded?(message)
+          raise PaymentRequiredError.new(message, response:) if payment_required?(message)
 
           raise BadRequestError.new(message, response:)
         end
@@ -131,6 +139,10 @@ module RubyLLM
 
         def overloaded?(message)
           matches?(message, OVERLOAD_PATTERNS)
+        end
+
+        def payment_required?(message)
+          matches?(message, PAYMENT_REQUIRED_PATTERNS)
         end
 
         def rate_limited?(message)

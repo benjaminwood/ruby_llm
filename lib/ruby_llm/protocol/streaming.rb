@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require 'event_stream_parser'
 require 'faraday'
 require 'json'
 
@@ -9,7 +8,7 @@ module RubyLLM
     module Streaming # :nodoc: all
       StreamState = Struct.new(:parser, :buffer) do
         def initialize
-          super(EventStreamParser::Parser.new, +'')
+          super(Transport::EventStreamParser.new, +'')
         end
       end
 
@@ -37,7 +36,7 @@ module RubyLLM
           block.call(data) if data.is_a?(Hash)
         end
 
-        @connection.post url, payload, usage: @usage_tracker do |req|
+        @connection.post url, payload, usage: @usage_tracker, stream: true do |req|
           req.headers = additional_headers.merge(req.headers) unless additional_headers.empty?
           (req.options.context ||= {})[Transport::Connection::STREAM_PROGRESS_KEY] = progress
           if faraday_1?

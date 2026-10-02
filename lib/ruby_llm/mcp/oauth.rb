@@ -17,14 +17,24 @@ module RubyLLM
       SERVER_FIELDS = %w[
         issuer token_endpoint token_endpoint_auth_methods_supported authorization_response_iss_parameter_supported
       ].freeze
+      CLIENT_FIELDS = %w[client_id client_secret issuer server redirect_uri].freeze
       AUTHORIZATION_SERVER_PATHS = [
         '/.well-known/oauth-authorization-server%<path>s',
         '/.well-known/openid-configuration%<path>s',
         '%<path>s/.well-known/openid-configuration'
       ].freeze
 
+      @refreshes = Hash.new { |refreshes, key| refreshes[key] = Mutex.new }
+      @refreshes_lock = Mutex.new
+
       def self.memory_store
         @memory_store ||= MemoryStore.new
+      end
+
+      # Runs the block while no other thread in this process refreshes the
+      # credentials stored under +key+.
+      def self.refreshing(key, &)
+        @refreshes_lock.synchronize { @refreshes[key] }.synchronize(&)
       end
 
       # Reads the parameters of a Bearer WWW-Authenticate challenge.
@@ -58,8 +68,15 @@ module RubyLLM
       def refresh
         return false unless credential&.key?('refresh_token')
 
-        store_tokens(token_request('refresh_token', refresh_token: credential['refresh_token']))
-        true
+        used = credential['access_token']
+        synchronize do
+          @credential = store.read(key)
+          next true if credential && credential['access_token'] != used
+          next false unless credential&.key?('refresh_token')
+
+          store_tokens(token_request('refresh_token', refresh_token: credential['refresh_token']))
+          true
+        end
       rescue Error
         false
       end
@@ -86,7 +103,7 @@ module RubyLLM
         check_callback(pending, params)
         tokens = token_request('authorization_code', code: value(params, :code), redirect_uri: pending['redirect_uri'],
                                                      code_verifier: pending['verifier'], pending:)
-        store_tokens(tokens, client: pending.slice('client_id', 'client_secret', 'issuer', 'server', 'scope'))
+        store_tokens(tokens, client: pending.slice(*CLIENT_FIELDS, 'scope'))
       end
 
       def deauthorize
@@ -105,8 +122,13 @@ module RubyLLM
         store.write(key, data, owner: @owner)
       end
 
+      def synchronize(&block)
+        self.class.refreshing(key) { store.respond_to?(:synchronize) ? store.synchronize(key, &block) : yield }
+      end
+
       def store_tokens(tokens, client: nil)
-        data = credential.to_h.except('pending').merge(client.to_h)
+        data = credential.to_h.except('pending')
+        data = data.except(*CLIENT_FIELDS).merge(client) if client
         data = data.merge('access_token' => tokens['access_token'], 'scope' => tokens['scope'] || data['scope'],
                           'expires_at' => (Time.now.to_i + tokens['expires_in'].to_i if tokens['expires_in']))
         data['refresh_token'] = tokens['refresh_token'] if tokens['refresh_token']
@@ -149,6 +171,14 @@ module RubyLLM
         headers = { 'Content-Type' => 'application/x-www-form-urlencoded', 'Accept' => 'application/json' }
         authenticate(client, server, form, headers) if client['client_secret']
         post(server['token_endpoint'], URI.encode_www_form(form.compact), headers)
+      rescue Error => e
+        forget_registration(client) if e.data.is_a?(Hash) && e.data['error'] == 'invalid_client'
+        raise
+      end
+
+      def forget_registration(client)
+        registration = registration_key(client['issuer'], client['redirect_uri'])
+        store.delete(registration) if store.read(registration)&.fetch('client_id', nil) == client['client_id']
       end
 
       def authenticate(client, server, form, headers)
@@ -222,18 +252,35 @@ module RubyLLM
       end
 
       def discover_authorization_server(issuer)
+        server = authorization_server_metadata(issuer)
+        return server if same_issuer?(server['issuer'], issuer)
+
+        named = server['issuer']
+        raise Error, "#{issuer} metadata names a different issuer" unless named.is_a?(String) && URI(named).host
+
+        server = authorization_server_metadata(named)
+        raise Error, "#{issuer} metadata names a different issuer" unless same_issuer?(server['issuer'], named)
+
+        server
+      rescue URI::InvalidURIError
+        raise Error, "#{issuer} metadata names a different issuer"
+      end
+
+      def authorization_server_metadata(issuer)
         uri = URI(issuer)
         path = uri.path.chomp('/')
         urls = AUTHORIZATION_SERVER_PATHS.map { |pattern| URI.join(uri, format(pattern, path:)).to_s }
         urls = urls.first(2) if path.empty?
-        server = first_json(urls.uniq) or raise Error, "#{issuer} publishes no authorization server metadata"
-        raise Error, "#{issuer} metadata names a different issuer" unless server['issuer'] == issuer
+        first_json(urls.uniq) or raise Error, "#{issuer} publishes no authorization server metadata"
+      end
 
-        server
+      # RFC 3986 section 6.2.3: an empty path and "/" name the same resource.
+      def same_issuer?(one, other)
+        [one, other].map { |issuer| issuer.to_s.sub(%r{\A([a-z][a-z0-9+.-]*://[^/?#]+)/(?=[?#]|\z)}i, '\\1') }.uniq.one?
       end
 
       def client_for(server, redirect_uri)
-        return { 'client_id' => @client_id, 'client_secret' => @client_secret }.compact if @client_id
+        return preregistered_client(server) if @client_id
 
         metadata_client_id = @config.mcp_client_id
         if metadata_client_id && server['client_id_metadata_document_supported']
@@ -243,20 +290,42 @@ module RubyLLM
         register(server, redirect_uri)
       end
 
+      def preregistered_client(server)
+        issuer_key = "issuer:#{@client_id} #{@server_url}"
+        issuer = store.read(issuer_key)&.fetch('issuer', nil)
+        store.write(issuer_key, { 'issuer' => server['issuer'] }, owner: nil) unless issuer
+        if issuer && !same_issuer?(issuer, server['issuer'])
+          raise Error, "#{@client_id} is registered with #{issuer}, but #{@server_url} now uses #{server['issuer']}"
+        end
+
+        { 'client_id' => @client_id, 'client_secret' => @client_secret }.compact
+      end
+
       def register(server, redirect_uri)
         endpoint = server['registration_endpoint'] or raise Error, "#{server['issuer']} does not register clients"
-        registration_key = "client:#{server['issuer']} #{redirect_uri}"
-        registered = store.read(registration_key)
-        return registered if registered
+        registration = registration_key(server['issuer'], redirect_uri)
+        scope = scopes_for(server)
+        registered = store.read(registration)
+        if registered && registered_for?(registered['scope'], scope)
+          return registered.slice('client_id', 'client_secret')
+        end
 
-        body = JSON.generate(
+        body = JSON.generate({
           client_name: @config.mcp_client_name, redirect_uris: [redirect_uri], response_types: ['code'],
           grant_types: %w[authorization_code refresh_token], token_endpoint_auth_method: 'none',
-          application_type: HTTP.loopback?(redirect_uri) ? 'native' : 'web'
-        )
+          application_type: HTTP.loopback?(redirect_uri) ? 'native' : 'web', scope:
+        }.compact)
         client = post(endpoint, body, 'Content-Type' => 'application/json').slice('client_id', 'client_secret')
-        store.write(registration_key, client, owner: nil)
+        store.write(registration, client.merge('scope' => scope).compact, owner: nil)
         client
+      end
+
+      def registered_for?(registered, requested)
+        (requested.to_s.split - registered.to_s.split).empty?
+      end
+
+      def registration_key(issuer, redirect_uri)
+        "client:#{issuer} #{redirect_uri}"
       end
 
       def scopes_for(server)
@@ -293,7 +362,9 @@ module RubyLLM
         rescue JSON::ParserError
           {}
         end
-        raise Error, "#{URI(url).host} refused the request: #{details['error_description'] || details['error']}"
+        details = {} unless details.is_a?(Hash)
+        raise Error.new("#{URI(url).host} refused the request: #{details['error_description'] || details['error']}",
+                        data: details)
       end
 
       def parse(response)

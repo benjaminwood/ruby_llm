@@ -5,18 +5,12 @@ module RubyLLM
     module Bedrock
       # Luma Ray 2 video generation through Bedrock asynchronous invocation.
       class AsyncVideos < Protocol
-        IMAGE_TYPES = %w[image/png image/jpeg].freeze
-
         def video_url
           '/async-invoke'
         end
 
         def render_video_payload(prompt, model:, with: [], provider_options: {})
           output_uri = video_output_uri
-          unless prompt.is_a?(String) && (1..5000).cover?(prompt.length)
-            raise ArgumentError, 'Luma Ray 2 requires a prompt between 1 and 5000 characters'
-          end
-
           options = Support::Utils.deep_symbolize_keys(provider_options)
           outer = options.slice(:clientRequestToken, :tags)
           input = { prompt: prompt }.merge(render_keyframes(with)).merge(options.except(*outer.keys))
@@ -25,8 +19,9 @@ module RubyLLM
         end
 
         def post_video(url, payload)
-          @connection.post(url, payload, idempotent: false) do |request|
-            request.headers.merge!(@provider.sign_headers('POST', url, JSON.generate(payload)))
+          body = JSON.generate(payload)
+          @connection.post(url, body, idempotent: false) do |request|
+            request.headers.merge!(@provider.sign_headers('POST', url, body))
           end
         end
 
@@ -91,7 +86,7 @@ module RubyLLM
               raise ArgumentError, 'Luma Ray 2 requires image bytes or URLs, not uploaded file ids'
             end
 
-            raise UnsupportedAttachmentError, attachment.mime_type unless IMAGE_TYPES.include?(attachment.mime_type)
+            raise UnsupportedAttachmentError, attachment.mime_type unless attachment.image?
           end
         end
 

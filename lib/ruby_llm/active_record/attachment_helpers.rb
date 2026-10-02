@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'active_support/core_ext/object/blank'
-require 'tempfile'
 
 module RubyLLM
   module ActiveRecord
@@ -12,7 +11,27 @@ module RubyLLM
         return unless message_record.respond_to?(:attachments)
 
         attachables = prepare_for_active_storage(attachments)
-        message_record.attachments.attach(attachables) if attachables.any?
+        return if attachables.empty?
+
+        message_record.attachments.attach(attachables)
+        Support::Utils.to_safe_array(attachments).grep(RubyLLM::Attachment).each do |attachment|
+          attachment.provider_file_store ||= ProviderFile.store { persisted_blob_key(message_record, attachment) }
+        end
+      end
+
+      # Active Storage records the size and MD5 of every blob, so the
+      # message's blob of the same size holds the attachment's bytes. Only
+      # attachments of equal size need the MD5 to tell them apart.
+      def persisted_blob_key(message_record, attachment)
+        blob = active_storage_blobs(attachment.source) if attachment.active_storage?
+        return blob.key if blob.is_a?(ActiveStorage::Blob)
+
+        content = attachment.content
+        candidates = message_record.attachments.blobs.where(byte_size: content.bytesize).to_a
+        return candidates.first&.key unless candidates.many?
+
+        checksum = OpenSSL::Digest::MD5.base64digest(content)
+        candidates.find { |candidate| candidate.checksum == checksum }&.key
       end
 
       def prepare_for_active_storage(attachments)
@@ -163,7 +182,23 @@ module RubyLLM
       end
 
       def active_storage_attachments?
-        respond_to?(:attachments) && attachments.attached?
+        return false unless respond_to?(:attachments)
+
+        preloaded = preloaded_attachments
+        preloaded ? preloaded.any? : attachments.attached?
+      end
+
+      def preloaded_attachments
+        return if pending_attachment_change || !self.class.reflect_on_association(:attachments_attachments)
+
+        preloaded_records(:attachments_attachments)
+      end
+
+      # Building an association proxy evaluates the association's scope,
+      # which costs more than reading the records a preload already loaded.
+      def preloaded_records(name)
+        association = association(name)
+        association.target if association.loaded?
       end
 
       def collect_attachments(action_text_attachments)
@@ -195,13 +230,13 @@ module RubyLLM
       end
 
       def stored_attachment(attachment, attachable)
-        if pending_upload_attachable?(attachable)
-          pending_upload_attachment(attachable)
-        else
-          tempfile = download_attachment(attachment)
-          RubyLLM::Attachment.new(tempfile, filename: attachment.filename.to_s,
-                                            resolution: attachment.metadata['resolution']&.to_sym)
-        end
+        stored = if pending_upload_attachable?(attachable)
+                   pending_upload_attachment(attachable)
+                 else
+                   RubyLLM::Attachment.new(attachment, resolution: attachment.metadata['resolution']&.to_sym)
+                 end
+        stored.provider_file_store = ProviderFile.store { attachment.blob&.key }
+        stored
       end
 
       def pending_upload_attachable?(attachable)
@@ -248,20 +283,6 @@ module RubyLLM
         Object.const_get(class_name).then { |klass| object.is_a?(klass) }
       rescue NameError
         false
-      end
-
-      def download_attachment(attachment)
-        ext = File.extname(attachment.filename.to_s)
-        basename = File.basename(attachment.filename.to_s, ext)
-        tempfile = Tempfile.new([basename, ext])
-        tempfile.binmode
-
-        attachment.download { |chunk| tempfile.write(chunk) }
-
-        tempfile.flush
-        tempfile.rewind
-        @_tempfiles << tempfile
-        tempfile
       end
     end
   end

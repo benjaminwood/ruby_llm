@@ -31,11 +31,11 @@ module RubyLLM
     attr_reader :mime_type
 
     # The requested media resolution: +:low+, +:medium+, +:high+,
-    # +:ultra_high+, or +nil+ for the provider default.
+    # +:ultra_high+, +:original+, or +nil+ for the provider default.
     attr_reader :resolution
 
     # Media resolutions accepted by +resolution:+.
-    RESOLUTIONS = %i[low medium high ultra_high].freeze
+    RESOLUTIONS = %i[low medium high ultra_high original].freeze
 
     # File extensions recognized as document attachments when the MIME type
     # alone is inconclusive.
@@ -64,10 +64,16 @@ module RubyLLM
       return if source.nil? || (source.is_a?(String) && source.strip.empty?)
       return source if source.is_a?(Attachment)
       return source.to_attachment if source.respond_to?(:to_attachment)
+      return from_h(source, config:) if source.is_a?(Hash)
 
       new(source, config:)
     end
     private_class_method :coerce
+
+    def self.from_h(data, config: nil) # :nodoc:
+      data = data.transform_keys(&:to_sym)
+      new(data.fetch(:source), filename: data[:filename], resolution: data[:resolution]&.to_sym, config:)
+    end
 
     # Creates an attachment from +source+: a file path, URL, IO-like object,
     # ActiveStorage object, or UploadedFile. Derives the filename from the
@@ -77,7 +83,9 @@ module RubyLLM
     #   RubyLLM::Attachment.new(StringIO.new(data), filename: "report.pdf")
     #
     # +resolution:+ asks the provider to spend more or fewer tokens on an
-    # image, video, or PDF. Providers without the setting ignore it.
+    # image, video, or PDF. +:original+ requests original image detail where
+    # supported, or the highest available resolution. Providers without
+    # the setting ignore it.
     #
     #   RubyLLM::Attachment.new("page-3.png", resolution: :ultra_high)
     #
@@ -120,6 +128,13 @@ module RubyLLM
     def provider_uploads # :nodoc:
       @provider_uploads ||= {}
     end
+
+    # Where uploads of this attachment outlive the process: an object that
+    # responds to <tt>fetch(provider:, account:)</tt>,
+    # <tt>store(upload, provider:, account:)</tt>, and
+    # <tt>forget(id, provider:, account:)</tt>. The Rails integration sets
+    # one for files kept in Active Storage.
+    attr_accessor :provider_file_store # :nodoc:
 
     def provider_file_id # :nodoc:
       @source.id if provider_file?
@@ -236,7 +251,7 @@ module RubyLLM
     end
 
     def to_h # :nodoc:
-      { type: type, source: @source }
+      { type: type, source: @source, filename: filename, resolution: resolution }.compact
     end
 
     def byte_size # :nodoc:

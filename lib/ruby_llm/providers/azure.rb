@@ -13,8 +13,18 @@ module RubyLLM
       protocol :files, Protocols::Azure::Files
       protocol :cohere, Azure::Cohere
 
+      def original_image_detail? # :nodoc:
+        true
+      end
+
       def api_base
         @config.azure_api_base
+      end
+
+      # Files belong to the Azure resource, whichever key or Entra ID token
+      # signs the request.
+      def account_identity
+        account_digest(azure_openai_v1_base)
       end
 
       # Deployments named after gpt-5.4+ and gpt-6+ models need the Responses

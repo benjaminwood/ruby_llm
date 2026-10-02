@@ -9,12 +9,22 @@ module RubyLLM
       protocol :embeddings, Protocols::ChatCompletions,
                batches: Protocols::ChatCompletions::EmbeddingBatches
       protocol :files, Protocols::OpenAI::Files
+      protocol :decisions, Protocols::OpenAI::Decisions
 
       RATE_LIMIT_RESET_HEADERS = %w[x-ratelimit-reset-requests x-ratelimit-reset-tokens].freeze
       RESET_DURATION_UNITS = { 'h' => 3600, 'm' => 60, 's' => 1, 'ms' => 0.001 }.freeze
 
+      def original_image_detail? # :nodoc:
+        true
+      end
+
       def api_base
         @config.openai_api_base || 'https://api.openai.com/v1'
+      end
+
+      def resolve_protocol(name, model, operation: nil, **options)
+        name ||= :decisions if operation == :judge
+        super
       end
 
       # Audio, realtime, and dedicated search models only exist on Chat Completions.
@@ -30,6 +40,10 @@ module RubyLLM
           'OpenAI-Organization' => @config.openai_organization_id,
           'OpenAI-Project' => @config.openai_project_id
         }.compact
+      end
+
+      def account_identity
+        account_digest(api_base, @config.openai_api_key, @config.openai_organization_id, @config.openai_project_id)
       end
 
       # OpenAI reports when each rate limit resets in its own headers,

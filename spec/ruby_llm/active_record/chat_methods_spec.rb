@@ -775,6 +775,38 @@ RSpec.describe RubyLLM::ActiveRecord::ChatMethods do
       chat
     end
 
+    def downloads
+      count = 0
+      subscriber = ActiveSupport::Notifications.subscribe(/\Aservice_(streaming_)?download\.active_storage\z/) do
+        count += 1
+      end
+      yield
+      count
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    it 'rebuilds and inspects a transcript without downloading its files' do
+      chat = chat_with_attachments(messages: 2, attachments: 2)
+
+      count = downloads do
+        loaded = Chat.find(chat.id)
+        loaded.to_llm.messages.each(&:inspect)
+        loaded.awaiting_approval?
+        loaded.pending_approvals.to_a
+      end
+
+      expect(count).to eq(0)
+    end
+
+    it 'downloads each file once, when a request needs its bytes' do
+      llm_chat = Chat.find(chat_with_attachments(messages: 2, attachments: 2).id).to_llm
+
+      expect(downloads { 2.times { llm_chat.render } }).to eq(4)
+      expect(llm_chat.messages.flat_map(&:attachments).map(&:content)).to eq(['content 0-0', 'content 0-1',
+                                                                              'content 1-0', 'content 1-1'])
+    end
+
     it 'falls back to a plain list for an association without a class' do
       chat = Chat.create!(model: model_id)
       allow(chat).to receive(:messages_association).and_return([])
@@ -788,6 +820,27 @@ RSpec.describe RubyLLM::ActiveRecord::ChatMethods do
       queries = QueryHelpers.matching(/active_storage_attachments|active_storage_blobs/) { Chat.find(chat.id).to_llm }
 
       expect(queries.size).to eq(2)
+    end
+
+    it 'reads preloaded rows without building a proxy per message' do
+      chat = Chat.create!(model: model_id)
+      call_ids = Array.new(4) { "call_#{SecureRandom.hex(8)}" }
+      call_ids.each_with_index do |call_id, index|
+        chat.messages.create!(role: 'user', content: "question #{index}")
+        answer = chat.messages.create!(role: 'assistant', content: "answer #{index}")
+        answer.ruby_llm_tool_calls.create!(tool_call_id: call_id, name: 'lookup')
+        chat.ruby_llm_usages.create!(message: answer, operation: 'chat', provider: 'openai', model: model_id,
+                                     status: 'succeeded', input_tokens: 3, output_tokens: 5)
+      end
+      loaded = Chat.find(chat.id)
+      allow(ActiveRecord::Associations::CollectionProxy).to receive(:create).and_call_original
+
+      llm_chat = loaded.to_llm
+
+      expect(ActiveRecord::Associations::CollectionProxy).to have_received(:create).at_most(2).times
+      expect(llm_chat.messages.map { |message| message.tokens.output }).to eq([nil, 5] * 4)
+      expect(llm_chat.messages.last.tool_calls.keys).to eq([call_ids.last])
+      expect(llm_chat.usage_entries.map { |entry| entry.message.content }).to eq(Array.new(4) { "answer #{_1}" })
     end
 
     it 'checks for attachments once for a transcript that has none' do

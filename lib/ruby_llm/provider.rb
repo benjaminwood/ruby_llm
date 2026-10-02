@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'digest'
 require 'json'
 require 'ruby_llm/error'
 
@@ -110,6 +111,10 @@ module RubyLLM
       self.class.configuration_requirements
     end
 
+    def original_image_detail? # :nodoc:
+      false
+    end
+
     def protocols # :nodoc:
       self.class.protocols
     end
@@ -201,22 +206,16 @@ module RubyLLM
     end
 
     def supports_deferred_tools?(model, protocol: nil) # :nodoc:
-      resolve_protocol(
-        protocol, model, tools: {}, schema: nil, thinking: nil, tool_prefs: nil, citations: false
-      ).new(self, model).supports_deferred_tools?
+      preprocessing_protocol(protocol, model).supports_deferred_tools?
     end
 
-    def preprocess_message(message, model:, protocol: nil) # :nodoc:
-      protocol_class = resolve_protocol(
-        protocol,
-        model,
-        tools: {},
-        schema: nil,
-        thinking: nil,
-        tool_prefs: nil,
-        citations: false
-      )
-      protocol_class.new(self, model).preprocess_message(message)
+    def preprocess_messages(messages, model:, protocol: nil) # :nodoc:
+      preprocessor = preprocessing_protocol(protocol, model)
+      messages.map { |message| preprocessor.preprocess_message(message) }
+    end
+
+    def discard_missing_uploads(messages, error, model:, protocol: nil) # :nodoc:
+      preprocessing_protocol(protocol, model).discard_missing_uploads(messages, error)
     end
 
     def batches? # :nodoc:
@@ -298,6 +297,21 @@ module RubyLLM
 
     def files? # :nodoc:
       protocols.key?(:files)
+    end
+
+    # Returns a String naming the account that owns the files this provider
+    # uploads, or +nil+ to keep each upload within the process that made it.
+    # The base implementation returns +nil+. Rails chats reuse an upload in
+    # later processes only under the same identity, so build it from what
+    # decides where uploaded files live, such as the endpoint and API key,
+    # an organization or project, or a storage bucket. Digest anything
+    # secret, and leave out credentials that rotate, such as session tokens:
+    #
+    #   def account_identity
+    #     Digest::SHA256.hexdigest([api_base, @config.acme_api_key].join("\0"))
+    #   end
+    def account_identity
+      nil
     end
 
     def list_models # :nodoc:
@@ -386,9 +400,9 @@ module RubyLLM
       protocol.new(self, model).rerank(query, documents, model: model_id_for(model), top_n:, provider_options:)
     end
 
-    def judge(input, questions:, model:, provider_options: {}) # :nodoc:
+    def judge(input, questions:, model:, with: [], provider_options: {}) # :nodoc:
       protocol = resolve_protocol(nil, model, operation: :judge)
-      protocol.new(self, model).judge(input, questions:, model: model_id_for(model), provider_options:)
+      protocol.new(self, model).judge(input, questions:, model: model_id_for(model), with:, provider_options:)
     end
 
     def upload_file(file, filename: nil, purpose: nil, expires_in: nil, uri: nil, content_type: nil, # :nodoc:
@@ -648,6 +662,11 @@ module RubyLLM
       explicit ? fetch_protocol(explicit) : protocol_for(model, **request)
     end
 
+    def preprocessing_protocol(protocol, model)
+      resolve_protocol(protocol, model, tools: {}, schema: nil, thinking: nil, tool_prefs: nil, citations: false)
+        .new(self, model)
+    end
+
     def default_protocol
       fetch_protocol(configured_protocol || self.class.default_protocol)
     end
@@ -689,6 +708,10 @@ module RubyLLM
 
     def model_id_for(model)
       model.respond_to?(:id) ? model.id : model
+    end
+
+    def account_digest(*parts)
+      Digest::SHA256.hexdigest(parts.join("\0"))
     end
 
     def try_parse_json(maybe_json)

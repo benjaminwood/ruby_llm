@@ -452,9 +452,9 @@ module RubyLLM
       raise Error, "#{@provider.name} doesn't support explicit content caching"
     end
 
-    def judge(input, questions:, model:, provider_options: {}) # :nodoc:
+    def judge(input, questions:, model:, with: [], provider_options: {}) # :nodoc:
       track_usage(:judgment) do
-        payload = render_judgment_payload(input, questions:, model:, provider_options:)
+        payload = render_judgment_payload(input, questions:, model:, with:, provider_options:)
         response = @connection.post judgment_url, payload, usage: @usage_tracker
         parse_judgment_response(response, questions:)
       end
@@ -497,6 +497,19 @@ module RubyLLM
       return message if uploaded == message.attachments
 
       message.with_attachments(uploaded)
+    end
+
+    # A provider can delete a file RubyLLM uploaded for an attachment. When
+    # a request fails naming such a file, or with a 404 that names none, the
+    # attachments forget those uploads so the next request uploads them
+    # again. Returns the uploads it forgot.
+    def discard_missing_uploads(messages, error)
+      scope = provider_upload_scope
+      missing_uploads(messages, error, scope).map do |attachment, upload|
+        attachment.provider_uploads.delete(scope)
+        StoredUploads.new(@provider, attachment.provider_file_store).forget(upload)
+        upload
+      end
     end
 
     private
@@ -585,7 +598,6 @@ module RubyLLM
       return attachment if attachment.provider_file?
       return attachment unless upload_large_attachment?(attachment)
 
-      ensure_provider_file_size!(attachment)
       Attachment.new(provider_upload(attachment), resolution: attachment.resolution, config: @config)
     end
 
@@ -598,8 +610,9 @@ module RubyLLM
       upload = attachment.provider_uploads[scope]
       return upload if upload && !upload.expired?
 
-      attachment.provider_uploads[scope] =
+      attachment.provider_uploads[scope] = StoredUploads.new(@provider, attachment.provider_file_store).fetch do
         @provider.upload_file(attachment, **provider_file_upload_options(attachment))
+      end
     end
 
     # A file id belongs to the account that uploaded it, so the memo is keyed
@@ -611,6 +624,19 @@ module RubyLLM
       "#{@provider.slug}:#{Digest::SHA256.hexdigest(credentials.join("\0"))}"
     end
 
+    def missing_uploads(messages, error, scope)
+      uploads = messages.flat_map(&:attachments).filter_map do |attachment|
+        upload = attachment.provider_uploads[scope]
+        [attachment, upload] if upload
+      end
+      named = uploads.select { |_, upload| names_file?(error, upload.id) }
+      named.empty? && error.response&.status == 404 ? uploads : named
+    end
+
+    def names_file?(error, id)
+      [error.message, error.response&.body].any? { |text| text.to_s.include?(id) }
+    end
+
     def upload_large_attachment?(attachment)
       size = attachment.byte_size
       size && size > default_large_file_upload_threshold && provider_file_attachable?(attachment)
@@ -620,30 +646,12 @@ module RubyLLM
       Float::INFINITY
     end
 
-    def provider_file_upload_limit
-      nil
-    end
-
     def provider_file_attachable?(_attachment)
       false
     end
 
     def provider_file_upload_options(_attachment)
       {}
-    end
-
-    def ensure_provider_file_size!(attachment)
-      limit = provider_file_upload_limit
-      return unless limit && attachment.byte_size.to_i > limit
-
-      raise Error, "#{@provider.name} file uploads support files up to #{format_bytes(limit)}; " \
-                   "#{attachment.filename} is #{format_bytes(attachment.byte_size)}"
-    end
-
-    def format_bytes(bytes)
-      return 'unknown size' unless bytes
-
-      "#{(bytes.to_f / (1024 * 1024)).round(1)} MB"
     end
 
     def validate_paint_inputs!(with:, mask:)

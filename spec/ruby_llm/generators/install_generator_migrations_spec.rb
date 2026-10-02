@@ -27,6 +27,23 @@ RSpec.describe RubyLLM::Generators::InstallGenerator, :generator do
     end
   end
 
+  { true => ['casts', 'on PostgreSQL', '::text'], false => ['does not cast', 'on other databases', ''] }
+    .each do |postgresql, (verb, databases, cast)|
+    it "#{verb} the usage check constraint columns #{databases}" do
+      generator = described_class.new([], {}, destination_root: destination, shell: Thor::Shell::Basic.new)
+      allow(generator).to receive(:postgresql?).and_return(postgresql)
+      generator.create_migration_files
+      migration = File.read(Dir.glob(File.join(destination, 'db/migrate/*_create_ruby_llm_records.rb')).sole)
+
+      expect(migration.lines.grep(/check_constraint/).map(&:strip)).to eq(
+        [
+          "t.check_constraint \"operation#{cast} IN (#{generator.usage_operations_sql})\"",
+          "t.check_constraint \"status#{cast} IN (#{generator.usage_statuses_sql})\""
+        ]
+      )
+    end
+  end
+
   [nil, :uuid, :integer].each do |primary_key_type|
     context "with #{primary_key_type || 'default'} primary keys" do
       before do
@@ -43,7 +60,7 @@ RSpec.describe RubyLLM::Generators::InstallGenerator, :generator do
           prefix = mappings.empty? ? '' : 'llm_'
 
           %W[#{prefix}chats #{prefix}messages ruby_llm_models ruby_llm_tool_calls ruby_llm_mcp_credentials
-             ruby_llm_usages ruby_llm_batches]
+             ruby_llm_usages ruby_llm_batches ruby_llm_provider_files]
             .each do |table|
               expect(migrations).to include("create_table :#{table}, id: :#{key_type} do |t|")
             end

@@ -10,7 +10,6 @@ module RubyLLM
         end
 
         OPENAI_INLINE_FILE_LIMIT = 50 * 1024 * 1024
-        OPENAI_FILE_UPLOAD_LIMIT = 512 * 1024 * 1024
         PROMPT_CACHE_OPTIONS = %i[key ttl mode retention].freeze
 
         module_function
@@ -346,7 +345,7 @@ module RubyLLM
 
           if msg.attachments.any?
             parts = [{ type: 'input_text', text: "Attachments from tool call #{msg.tool_call_id}:" }]
-            parts.concat(Media.format_content(nil, msg.attachments))
+            parts.concat(format_content(nil, msg.attachments))
             items << { role: 'user', content: parts }
           end
 
@@ -464,10 +463,6 @@ module RubyLLM
 
         def default_large_file_upload_threshold
           OPENAI_INLINE_FILE_LIMIT
-        end
-
-        def provider_file_upload_limit
-          OPENAI_FILE_UPLOAD_LIMIT
         end
 
         def provider_file_attachable?(attachment)

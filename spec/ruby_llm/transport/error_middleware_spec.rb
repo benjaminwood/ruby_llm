@@ -256,6 +256,17 @@ RSpec.describe RubyLLM::Transport::ErrorMiddleware do
       end.to raise_error(RubyLLM::OverloadedError, msg)
     end
 
+    it "maps Anthropic's credit balance 400 to PaymentRequiredError" do
+      msg = 'Your credit balance is too low to access the Anthropic API. ' \
+            'Please go to Plans & Billing to upgrade or purchase credits.'
+      response = Struct.new(:status, :body).new(400, %({"error":{"message":"#{msg}"}}))
+      provider = instance_double(RubyLLM::Provider, parse_error: msg)
+
+      expect do
+        described_class.parse_error(provider: provider, response: response)
+      end.to raise_error(RubyLLM::PaymentRequiredError, msg)
+    end
+
     it 'keeps a 400 that only mentions overloaded as BadRequestError' do
       msg = 'Unknown parameter: overloaded'
       response = Struct.new(:status, :body).new(400, %({"error":{"message":"#{msg}"}}))
@@ -275,11 +286,13 @@ RSpec.describe RubyLLM::Transport::ErrorMiddleware do
       end.to raise_error(RubyLLM::BadRequestError)
     end
 
-    it 'returns the message for a successful response instead of raising' do
-      response = Struct.new(:status, :body).new(200, '{}')
-      provider = instance_double(RubyLLM::Provider, parse_error: nil)
+    it 'leaves a successful response body to the JSON middleware' do
+      response = Struct.new(:status, :body).new(200, '{"choices":[]}')
+      provider = instance_double(RubyLLM::Provider)
+      allow(provider).to receive(:parse_error)
 
       expect(described_class.parse_error(provider: provider, response: response)).to be_nil
+      expect(provider).not_to have_received(:parse_error)
     end
 
     it 'raises the base error for a status it does not map' do

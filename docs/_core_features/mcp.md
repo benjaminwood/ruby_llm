@@ -107,7 +107,7 @@ docs = RubyLLM.mcp(url: "https://learn.microsoft.com/api/mcp")
 files = RubyLLM.mcp(command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."])
 ```
 
-It takes the same settings as keywords: `transport:`, `bearer_token:`, `headers:`, `env:`, `directory:`, `timeout:`, `prefix:`, `oauth:`, and `name:`. That suits servers your users add at runtime:
+It takes the same settings as keywords: `transport:`, `bearer_token:`, `headers:`, `env:`, `directory:`, `timeout:`, `prefix:`, `input_requests:`, `oauth:`, and `name:`. That suits servers your users add at runtime:
 
 ```ruby
 RubyLLM.mcp(url: server.endpoint, name: "mcp_#{server.id}", prefix: "mcp_#{server.id}",
@@ -397,6 +397,17 @@ chat.complete
 
 `complete` resumes the call once all its requests are settled: RubyLLM sends the answers with the server's saved request state, and the server finishes. Calling a tool outside a chat raises `RubyLLM::MCP::InputRequiredError` instead, with the unanswered requests in `requests`.
 
+A paused chat waits until someone answers. If your app has nowhere to show a kind of request, tell servers not to send it:
+
+```ruby
+class Deploys < RubyLLM::MCP
+  url "https://deploys.example.com/mcp"
+  input_requests :url
+end
+```
+
+RubyLLM accepts form and URL requests by default. `input_requests :form` or `input_requests :url` keeps one kind, and `input_requests false` accepts none, so servers finish the call without asking or answer with an error that raises `RubyLLM::MCP::Error`. A server that asks for a kind you left out gets a decline. Inline servers take the same setting: `RubyLLM.mcp(url: server.endpoint, input_requests: false)`.
+
 In Rails, the requests persist on the tool call, so a job can pause, a controller can record the user's answer, and another job can resume the call after a deploy or a restart. New applications get the `pending_input` column from `ruby_llm:install`; applications that installed RubyLLM 2.0 add it with `bin/rails generate ruby_llm:upgrade`.
 
 Servers never ask for passwords or tokens through forms; those go through URL requests, so they never pass through your application.
@@ -478,6 +489,8 @@ class Slack < RubyLLM::MCP
 end
 ```
 
+An app belongs to the authorization server you registered it with. RubyLLM remembers that server the first time it uses the app's credentials, and if the MCP server later names another one, it raises `RubyLLM::MCP::Error` instead of sending them there. Register an app with the new authorization server and pass its credentials.
+
 Pass `scopes:` to ask for specific scopes instead of the ones the server suggests.
 
 ### Storing Credentials
@@ -492,6 +505,8 @@ bin/rails db:migrate
 
 Plain Ruby keeps credentials in memory. Set `config.mcp_credential_store` to an object with `read(key)`, `write(key, data, owner:)`, and `delete(key)` to keep them elsewhere.
 
+Some authorization servers rotate refresh tokens and reject one that was used twice, so RubyLLM refreshes each grant in one place at a time. Threads take turns, and a worker that waited uses the token the first one received. In Rails, a row lock does the same across processes. A store of your own that several processes share should also respond to `synchronize(key)`, running the block while no other process holds that key.
+
 ### Client Registration
 
 Authorization servers that support client ID metadata documents can identify your app by a URL instead of a registration. Serve the document from your app and point RubyLLM at it:
@@ -503,11 +518,13 @@ RubyLLM.configure do |config|
 end
 ```
 
-The document's `client_id` must be that exact URL, and its `redirect_uris` must list your callback. Without it, RubyLLM registers with servers that allow dynamic registration, once per authorization server and callback.
+The document's `client_id` must be that exact URL, and its `redirect_uris` must list your callback. Without it, RubyLLM registers with servers that allow dynamic registration, once per authorization server and callback. When an authorization server forgets a registration and answers `invalid_client`, RubyLLM registers again the next time a user authorizes.
 
 ## Connections and Safety
 
-RubyLLM speaks the 2026-07-28 revision of the protocol, where every request stands alone. For servers that predate it, RubyLLM falls back to the older handshake without declaring client capabilities, so those servers never send requests back.
+RubyLLM speaks the 2026-07-28 revision of the protocol, where every request stands alone. For servers that predate it, back to 2024-11-05, RubyLLM falls back to the older handshake without declaring client capabilities, so those servers never send requests back. When such a server ends its session, RubyLLM starts a new one and sends the request again, and `close` ends the session. Connecting to a server that speaks none of these revisions raises `RubyLLM::MCP::Error`.
+
+A response stream can break before the answer arrives, such as when a proxy drops a long call. RubyLLM then sends the request again, as the 2026-07-28 revision requires. Older servers can resume the stream instead: RubyLLM waits as long as the server asks and reconnects from the last event it received. Either way it tries three times at most, then raises `RubyLLM::MCP::Error`.
 
 Some defaults protect applications that connect to servers they do not control:
 

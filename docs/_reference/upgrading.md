@@ -19,6 +19,8 @@ After reading this guide, you will know:
 * What to finish on 2.0 before you update the gem.
 * How to upgrade a 2.0 application and its Rails schema to 2.1.
 * How to move Perplexity chat from Sonar to presets.
+* Which provider limits now raise the provider's error.
+* Where to read the request a chat sends.
 
 This guide covers **2.0 to 2.1**. Coming from 1.x? Follow the [2.0 upgrade guide](https://github.com/crmne/ruby_llm/blob/v2.0.0/docs/_reference/upgrading.md) with RubyLLM 2.0 first.
 
@@ -55,7 +57,7 @@ Then update it in your development branch:
 bundle update ruby_llm
 ```
 
-2.1 does not require changes to your code, except to move Perplexity chat off Sonar.
+2.1 does not require changes to your code, except to move Perplexity chat off Sonar, to rescue provider errors where RubyLLM used to check a provider's limits, and to stop reading request bodies from raw responses.
 
 ## Move Perplexity Chat to Presets
 
@@ -101,6 +103,39 @@ To keep Sonar writing the answers, name it as a model. A model searches only wit
 RubyLLM.chat(model: "perplexity/sonar", provider: :perplexity).with_provider_tools(:web_search)
 ```
 
+## Rescue Provider Errors for Provider Limits
+
+RubyLLM no longer copies provider limits into checks of its own. A request it used to refuse now reaches the provider, and the provider's error names the limit. These calls raised `ArgumentError` or `RubyLLM::UnsupportedAttachmentError` before the request in 2.0. Now the provider decides, and a request it rejects raises `RubyLLM::BadRequestError` or another `RubyLLM::Error`:
+
+* `RubyLLM.rerank` on Bedrock or Vertex AI with no documents, more than 1,000 documents, an empty query, or a `top_n:` outside the provider's range.
+* `RubyLLM.embed` with more than one image on Cohere Embed v3.
+* Cohere embedding batches with `dimensions:`.
+* `RubyLLM.upload` on OpenAI or Azure without `purpose:`.
+* `RubyLLM.upload` on DeepSeek with a file that is not an image, a file over 64 MiB, or a `purpose:` other than `"user_data"`.
+* `RubyLLM.research` on Vertex AI with an agent other than the Deep Research preview, or with audio or video attachments.
+* `RubyLLM.animate` with Luma Ray 2 on Bedrock and an empty prompt, a prompt over 5,000 characters, or keyframes other than PNG or JPEG.
+* Other media formats on Bedrock: Stability source images beyond JPEG, PNG, and WebP, guardrail images beyond PNG and JPEG, and Voxtral audio beyond MP3 and WAV.
+* ElevenLabs image masks on models other than GPT Image, and reference audio or video on video models other than Seedance.
+* `RubyLLM.animate` without a prompt on ElevenLabs or GPUStack.
+* `RubyLLM.transcribe` on Gemini with `prompt:` combined with speaker names or word timestamps.
+* Streaming transcription on ElevenLabs or xAI with a WAV sample rate outside the rates RubyLLM listed, or on xAI with more than eight channels.
+* Perplexity Router chats with request options such as `seed`, tools without descriptions, audio other than MP3 or WAV, or a schema with `strict: false`, and Sonar chats with documents other than PDF, DOC, DOCX, TXT, or RTF.
+* Gemini Interactions chats with a thinking effort other than minimal, low, medium, or high.
+* Bedrock Converse chats with a thinking effort and a `max_output_tokens:` too small for the model's smallest thinking budget.
+
+If you rescue `ArgumentError` or `RubyLLM::UnsupportedAttachmentError` around these calls, rescue `RubyLLM::Error` instead. Bedrock and Vertex AI embedding batches also send empty strings to the provider now, instead of refusing the batch.
+
+RubyLLM no longer drops an explicit option the provider might reject, either. `RubyLLM.paint` on xAI now sends `size:`, so xAI's error replaces an image at its default size. Leave `size:` unset for xAI.
+
+## Read Requests Before They Are Sent
+
+A raw response no longer keeps the request it answered: `response.raw.env.request_body` is `nil`, so a conversation does not hold a serialized copy of its history for every reply. Read the request from the chat instead:
+
+```ruby
+chat.render
+chat.before_request { |payload| Rails.logger.debug(payload) }
+```
+
 ## Upgrade the Rails Schema
 
 Rails applications generate and run the 2.1 upgrade:
@@ -110,7 +145,7 @@ bin/rails generate ruby_llm:upgrade
 bin/rails db:migrate
 ```
 
-It adds the `ruby_llm_mcp_credentials` table, where the [MCP client]({% link _core_features/mcp.md %}#authorization) keeps OAuth credentials encrypted, and a `pending_input` column to `ruby_llm_tool_calls`, where a paused MCP tool call keeps its input requests. Both are new; the migration changes no existing data. Credentials use Active Record encryption, so run `bin/rails db:encryption:init` first if your app has no encryption keys.
+It adds the `ruby_llm_mcp_credentials` table, where the [MCP client]({% link _core_features/mcp.md %}#authorization) keeps OAuth credentials encrypted, a `pending_input` column to `ruby_llm_tool_calls`, where a paused MCP tool call keeps its input requests, and the `ruby_llm_provider_files` table, where RubyLLM records the [provider uploads of stored attachments]({% link _advanced/rails-persistence.md %}#attachments-and-structured-output). All three are new; the migration changes no existing data. Credentials use Active Record encryption, so run `bin/rails db:encryption:init` first if your app has no encryption keys.
 
 Run your tests and deploy.
 

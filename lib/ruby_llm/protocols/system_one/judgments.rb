@@ -13,7 +13,9 @@ module RubyLLM
           'v1/systemone'
         end
 
-        def render_judgment_payload(input, questions:, model:, provider_options: {})
+        def render_judgment_payload(input, questions:, model:, with: [], provider_options: {})
+          raise UnsupportedAttachmentError, with.first.mime_type unless with.empty?
+
           reserved = provider_options.keys.map(&:to_s) & %w[model state questions]
           unless reserved.empty?
             raise ArgumentError, "Use the judgment arguments instead of provider_options for #{reserved.join(', ')}"
@@ -28,13 +30,6 @@ module RubyLLM
 
         def render_question(question)
           criteria = question.criteria
-          if question.type == :choice && criteria.size > 255
-            raise ArgumentError, 'System One choices support at most 255 options'
-          end
-          if question.type == :score && criteria.size > 10
-            raise ArgumentError, 'System One scores support at most 10 levels'
-          end
-
           if question.type == :probability && criteria
             criteria = criteria.transform_keys { |key| BOOLEAN_KEYS.fetch(key.to_s) }
           end

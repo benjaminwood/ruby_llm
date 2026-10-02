@@ -37,7 +37,7 @@ module RubyLLM
 
         handle_chunk_content(chunk)
         accumulate_citations(chunk.citations)
-        accumulate_tool_references(chunk.tool_references)
+        @tool_references.concat(chunk.tool_references)
         append_thinking_from_chunk(chunk)
         accumulate_server_tool_calls(chunk.server_tool_calls)
         @raw_content = chunk.raw_content if chunk.raw_content
@@ -68,7 +68,7 @@ module RubyLLM
           server_tool_calls: @server_tool_calls,
           raw_content: @raw_content,
           raw_reasoning: @raw_reasoning,
-          tool_references: @tool_references,
+          tool_references: @tool_references.uniq,
           finish_reason: @finish_reason,
           model: model,
           tool_calls: tool_calls_from_stream(response),
@@ -86,12 +86,6 @@ module RubyLLM
 
           @citation_keys[key] = true
           @citations << citation
-        end
-      end
-
-      def accumulate_tool_references(new_references)
-        new_references.each do |reference|
-          @tool_references << reference unless @tool_references.include?(reference)
         end
       end
 

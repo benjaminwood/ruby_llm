@@ -22,12 +22,12 @@ RSpec.describe RubyLLM::Protocols::Responses::Tools do
 
   describe '.format_tools' do
     it 'does not append the tool_search tool when nothing is deferred' do
-      formatted = described_class.format_tools(a: tool('a', deferred: false))
+      formatted = described_class.format_tools({ a: tool('a', deferred: false) })
       expect(formatted.map { |t| t[:type] }).not_to include('tool_search')
     end
 
     it 'appends the native tool_search tool once when any function is deferred' do
-      formatted = described_class.format_tools(a: tool('a', deferred: false), b: tool('b', deferred: true))
+      formatted = described_class.format_tools({ a: tool('a', deferred: false), b: tool('b', deferred: true) })
       expect(formatted.last).to eq({ type: 'tool_search' })
       expect(formatted.count { |t| t[:type] == 'tool_search' }).to eq(1)
     end
@@ -164,6 +164,14 @@ RSpec.describe RubyLLM::Protocols::Responses::Tools do
       expect(weather[:defer_loading]).to be(true)
       expect(current).not_to have_key(:defer_loading)
       expect(tools.count { |t| t[:type] == 'tool_search' }).to eq(1)
+    end
+
+    it 'does not add a second tool_search when one is configured' do
+      chat.with_tools(WeatherLookupTool, CurrentTimeTool)
+      chat.with_provider_tools({ type: 'tool_search' })
+      chat.ask_later('hi')
+
+      expect(chat.render[:tools].count { |t| t[:type] == 'tool_search' }).to eq(1)
     end
   end
 end

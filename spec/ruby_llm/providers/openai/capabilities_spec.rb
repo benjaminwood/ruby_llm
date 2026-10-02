@@ -4,7 +4,7 @@ require 'spec_helper'
 
 RSpec.describe RubyLLM::Providers::OpenAI::Capabilities do
   it 'adds tool_search for gpt-5.4 and later Responses models' do
-    %w[gpt-5.4 gpt-5.4-2026-03-05 gpt-5.5 gpt-5.6-sol gpt-6-astra].each do |id|
+    %w[gpt-5.4 gpt-5.4-2026-03-05 gpt-5.5 gpt-5.6-sol gpt-6-astra gpt-6.1-sol].each do |id|
       capabilities = described_class.augment(%w[function_calling], model_id: id, modalities: { output: ['text'] })
 
       expect(capabilities).to include('tool_search'), id

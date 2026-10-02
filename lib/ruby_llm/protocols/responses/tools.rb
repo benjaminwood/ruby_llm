@@ -25,9 +25,11 @@ module RubyLLM
           RubyLLM::Support::Utils.deep_merge(definition, tool.provider_options)
         end
 
-        def format_tools(tools)
+        def format_tools(tools, provider_tools: [])
           formatted = tools.map { |_, tool| tool_for(tool) }
-          formatted << NATIVE_TOOL_SEARCH.dup if formatted.any? { |entry| entry[:defer_loading] }
+          if formatted.any? { |entry| entry[:defer_loading] } && !search_tool_configured?(provider_tools)
+            formatted << NATIVE_TOOL_SEARCH.dup
+          end
           formatted
         end
 
@@ -36,8 +38,11 @@ module RubyLLM
         end
 
         def replay_search?(tools, provider_tools)
-          tools.values.any? { |tool| deferred?(tool) } ||
-            provider_tools.any? { |entry| (entry[:type] || entry['type']) == NATIVE_TOOL_SEARCH[:type] }
+          tools.values.any? { |tool| deferred?(tool) } || search_tool_configured?(provider_tools)
+        end
+
+        def search_tool_configured?(provider_tools)
+          provider_tools.any? { |entry| (entry[:type] || entry['type']) == NATIVE_TOOL_SEARCH[:type] }
         end
 
         def build_tool_choice(tool_choice)

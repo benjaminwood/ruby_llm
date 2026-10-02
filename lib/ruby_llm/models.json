@@ -28566,12 +28566,12 @@
   },
   {
     "id": "north-small-translate-09-2026",
-    "name": "north-small-translate-09-2026",
+    "name": "North Small Translate",
     "provider": "cohere",
-    "family": null,
-    "created_at": null,
+    "family": "north",
+    "created_at": "2026-09-09 00:00:00 UTC",
     "context_window": 32768,
-    "max_output_tokens": null,
+    "max_output_tokens": 16000,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -28584,7 +28584,14 @@
     "capabilities": [
       "streaming"
     ],
-    "pricing": {},
+    "pricing": {
+      "text_tokens": {
+        "standard": {
+          "input_per_million": 0,
+          "output_per_million": 0
+        }
+      }
+    },
     "metadata": {
       "endpoints": [
         "generate",
@@ -28596,7 +28603,23 @@
         "safety_modes"
       ],
       "finetuned": false,
-      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/north-small-translate-09-2026.json"
+      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/north-small-translate-09-2026.json",
+      "source": "models.dev",
+      "provider_id": "cohere",
+      "open_weights": true,
+      "attachment": false,
+      "temperature": true,
+      "last_updated": "2026-09-09",
+      "tool_call": false,
+      "reasoning": false,
+      "cost": {
+        "input": 0,
+        "output": 0
+      },
+      "limit": {
+        "context": 32768,
+        "output": 16000
+      }
     }
   },
   {
@@ -28781,12 +28804,12 @@
   },
   {
     "id": "tiny-aya-earth",
-    "name": "tiny-aya-earth",
+    "name": "Tiny Aya Earth",
     "provider": "cohere",
     "family": null,
-    "created_at": null,
-    "context_window": 8192,
-    "max_output_tokens": null,
+    "created_at": "2026-02-17 00:00:00 UTC",
+    "context_window": 8000,
+    "max_output_tokens": 8000,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -28797,8 +28820,8 @@
       ]
     },
     "capabilities": [
-      "streaming",
       "function_calling",
+      "streaming",
       "tool_choice",
       "citations"
     ],
@@ -28817,17 +28840,29 @@
         "citations"
       ],
       "finetuned": false,
-      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/tiny-aya-earth.json"
+      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/tiny-aya-earth.json",
+      "source": "models.dev",
+      "provider_id": "cohere",
+      "open_weights": true,
+      "attachment": false,
+      "temperature": true,
+      "last_updated": "2026-02-17",
+      "tool_call": true,
+      "reasoning": false,
+      "limit": {
+        "context": 8000,
+        "output": 8000
+      }
     }
   },
   {
     "id": "tiny-aya-fire",
-    "name": "tiny-aya-fire",
+    "name": "Tiny Aya Fire",
     "provider": "cohere",
     "family": null,
-    "created_at": null,
-    "context_window": 8192,
-    "max_output_tokens": null,
+    "created_at": "2026-02-17 00:00:00 UTC",
+    "context_window": 8000,
+    "max_output_tokens": 8000,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -28838,8 +28873,8 @@
       ]
     },
     "capabilities": [
-      "streaming",
       "function_calling",
+      "streaming",
       "tool_choice",
       "citations"
     ],
@@ -28858,17 +28893,29 @@
         "citations"
       ],
       "finetuned": false,
-      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/tiny-aya-fire.json"
+      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/tiny-aya-fire.json",
+      "source": "models.dev",
+      "provider_id": "cohere",
+      "open_weights": true,
+      "attachment": false,
+      "temperature": true,
+      "last_updated": "2026-02-17",
+      "tool_call": true,
+      "reasoning": false,
+      "limit": {
+        "context": 8000,
+        "output": 8000
+      }
     }
   },
   {
     "id": "tiny-aya-global",
-    "name": "tiny-aya-global",
+    "name": "Tiny Aya Global",
     "provider": "cohere",
     "family": null,
-    "created_at": null,
-    "context_window": 8192,
-    "max_output_tokens": null,
+    "created_at": "2026-02-17 00:00:00 UTC",
+    "context_window": 8000,
+    "max_output_tokens": 8000,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -28879,8 +28926,8 @@
       ]
     },
     "capabilities": [
-      "streaming",
       "function_calling",
+      "streaming",
       "tool_choice",
       "citations"
     ],
@@ -28899,17 +28946,29 @@
         "citations"
       ],
       "finetuned": false,
-      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/tiny-aya-global.json"
+      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/tiny-aya-global.json",
+      "source": "models.dev",
+      "provider_id": "cohere",
+      "open_weights": true,
+      "attachment": false,
+      "temperature": true,
+      "last_updated": "2026-02-17",
+      "tool_call": true,
+      "reasoning": false,
+      "limit": {
+        "context": 8000,
+        "output": 8000
+      }
     }
   },
   {
     "id": "tiny-aya-water",
-    "name": "tiny-aya-water",
+    "name": "Tiny Aya Water",
     "provider": "cohere",
     "family": null,
-    "created_at": null,
-    "context_window": 8192,
-    "max_output_tokens": null,
+    "created_at": "2026-02-17 00:00:00 UTC",
+    "context_window": 8000,
+    "max_output_tokens": 8000,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -28920,8 +28979,8 @@
       ]
     },
     "capabilities": [
-      "streaming",
       "function_calling",
+      "streaming",
       "tool_choice",
       "citations"
     ],
@@ -28940,7 +28999,19 @@
         "citations"
       ],
       "finetuned": false,
-      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/tiny-aya-water.json"
+      "tokenizer_url": "https://storage.googleapis.com/cohere-public/tokenizers/tiny-aya-water.json",
+      "source": "models.dev",
+      "provider_id": "cohere",
+      "open_weights": true,
+      "attachment": false,
+      "temperature": true,
+      "last_updated": "2026-02-17",
+      "tool_call": true,
+      "reasoning": false,
+      "limit": {
+        "context": 8000,
+        "output": 8000
+      }
     }
   },
   {
@@ -49825,6 +49896,7 @@
       "structured_output",
       "reasoning",
       "vision",
+      "judgment",
       "tool_search",
       "tool_choice",
       "parallel_tool_calls"
@@ -50029,6 +50101,7 @@
       "structured_output",
       "reasoning",
       "vision",
+      "tool_search",
       "tool_choice",
       "parallel_tool_calls"
     ],
@@ -59530,7 +59603,7 @@
     "family": "deepseek-flash",
     "created_at": "2026-04-24 00:00:00 UTC",
     "context_window": 1048576,
-    "max_output_tokens": 131072,
+    "max_output_tokens": 384000,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -59551,9 +59624,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.04186,
-          "output_per_million": 0.08372,
-          "cache_read_input_per_million": 0.008372
+          "input_per_million": 0.042,
+          "output_per_million": 0.084,
+          "cache_read_input_per_million": 0.0084
         }
       }
     },
@@ -59626,13 +59699,13 @@
         }
       ],
       "cost": {
-        "input": 0.04186,
-        "output": 0.08372,
-        "cache_read": 0.008372
+        "input": 0.042,
+        "output": 0.084,
+        "cache_read": 0.0084
       },
       "limit": {
         "context": 1048576,
-        "output": 131072
+        "output": 384000
       },
       "knowledge": "2025-05"
     }
@@ -60003,9 +60076,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.66,
-          "output_per_million": 1.98,
-          "cache_read_input_per_million": 0.022
+          "input_per_million": 1.32,
+          "output_per_million": 3.96,
+          "cache_read_input_per_million": 0.044
         }
       }
     },
@@ -60074,9 +60147,9 @@
         }
       ],
       "cost": {
-        "input": 0.66,
-        "output": 1.98,
-        "cache_read": 0.022
+        "input": 1.32,
+        "output": 3.96,
+        "cache_read": 0.044
       },
       "limit": {
         "context": 1048576,
@@ -72772,7 +72845,7 @@
     "family": "kimi-thinking",
     "created_at": "2025-11-06 00:00:00 UTC",
     "context_window": 262144,
-    "max_output_tokens": 235929,
+    "max_output_tokens": 98304,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -72852,11 +72925,12 @@
       "reasoning_options": [],
       "cost": {
         "input": 0.6,
-        "output": 2.5
+        "output": 2.5,
+        "cache_read": 0.15
       },
       "limit": {
         "context": 262144,
-        "output": 235929
+        "output": 98304
       },
       "knowledge": "2024-08"
     }
@@ -73211,9 +73285,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.415,
+          "input_per_million": 0.3537,
           "output_per_million": 10,
-          "cache_read_input_per_million": 0.415
+          "cache_read_input_per_million": 0.3537
         }
       }
     },
@@ -73284,9 +73358,9 @@
         }
       ],
       "cost": {
-        "input": 0.415,
+        "input": 0.3537,
         "output": 10,
-        "cache_read": 0.415
+        "cache_read": 0.3537
       },
       "limit": {
         "context": 1048576,
@@ -74451,7 +74525,7 @@
     "family": "nemotron",
     "created_at": "2026-06-04 00:00:00 UTC",
     "context_window": 262144,
-    "max_output_tokens": 182520,
+    "max_output_tokens": 16384,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -74472,9 +74546,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.6,
-          "output_per_million": 2.4,
-          "cache_read_input_per_million": 0.12
+          "input_per_million": 0.5,
+          "output_per_million": 2.2,
+          "cache_read_input_per_million": 0.1
         }
       }
     },
@@ -74543,13 +74617,13 @@
         }
       ],
       "cost": {
-        "input": 0.6,
-        "output": 2.4,
-        "cache_read": 0.12
+        "input": 0.5,
+        "output": 2.2,
+        "cache_read": 0.1
       },
       "limit": {
         "context": 262144,
-        "output": 182520
+        "output": 16384
       }
     }
   },
@@ -74883,7 +74957,7 @@
     "family": "nemotron",
     "created_at": "2026-08-11 00:00:00 UTC",
     "context_window": 262144,
-    "max_output_tokens": 131072,
+    "max_output_tokens": 32768,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -74904,9 +74978,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.0595,
-          "output_per_million": 0.17,
-          "cache_read_input_per_million": 0.02975
+          "input_per_million": 0.06,
+          "output_per_million": 0.16,
+          "cache_read_input_per_million": 0.03
         }
       }
     },
@@ -74966,13 +75040,13 @@
         }
       ],
       "cost": {
-        "input": 0.0595,
-        "output": 0.17,
-        "cache_read": 0.02975
+        "input": 0.06,
+        "output": 0.16,
+        "cache_read": 0.03
       },
       "limit": {
         "context": 262144,
-        "output": 131072
+        "output": 32768
       }
     }
   },
@@ -88243,7 +88317,7 @@
     "family": "qwen",
     "created_at": "2025-07-29 00:00:00 UTC",
     "context_window": 262144,
-    "max_output_tokens": 32000,
+    "max_output_tokens": 235929,
     "knowledge_cutoff": "2025-06-30",
     "modalities": {
       "input": [
@@ -88263,8 +88337,8 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.04815,
-          "output_per_million": 0.19305
+          "input_per_million": 0.1,
+          "output_per_million": 0.3
         }
       }
     },
@@ -88316,12 +88390,12 @@
       "structured_output": true,
       "reasoning": false,
       "cost": {
-        "input": 0.04815,
-        "output": 0.19305
+        "input": 0.1,
+        "output": 0.3
       },
       "limit": {
         "context": 262144,
-        "output": 32000
+        "output": 235929
       },
       "knowledge": "2025-06-30"
     }
@@ -96361,9 +96435,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.0825,
-          "output_per_million": 0.33,
-          "cache_read_input_per_million": 0.020625
+          "input_per_million": 0.132,
+          "output_per_million": 0.528,
+          "cache_read_input_per_million": 0.033
         }
       }
     },
@@ -96428,9 +96502,9 @@
         }
       ],
       "cost": {
-        "input": 0.0825,
-        "output": 0.33,
-        "cache_read": 0.020625
+        "input": 0.132,
+        "output": 0.528,
+        "cache_read": 0.033
       },
       "limit": {
         "context": 262144,
@@ -96559,9 +96633,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.7506,
-          "output_per_million": 2.2509,
-          "cache_read_input_per_million": 0.0378
+          "input_per_million": 0.834,
+          "output_per_million": 2.501,
+          "cache_read_input_per_million": 0.042
         }
       }
     },
@@ -96624,9 +96698,9 @@
         }
       ],
       "cost": {
-        "input": 0.7506,
-        "output": 2.2509,
-        "cache_read": 0.0378
+        "input": 0.834,
+        "output": 2.501,
+        "cache_read": 0.042
       },
       "limit": {
         "context": 1048576,
@@ -97002,7 +97076,7 @@
     "family": "ling",
     "created_at": "2026-07-15 00:00:00 UTC",
     "context_window": 524288,
-    "max_output_tokens": 471859,
+    "max_output_tokens": 262144,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -97025,9 +97099,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 1,
+          "input_per_million": 0.95,
           "output_per_million": 4.05,
-          "cache_read_input_per_million": 0.17
+          "cache_read_input_per_million": 0.16
         }
       }
     },
@@ -97094,13 +97168,13 @@
         }
       ],
       "cost": {
-        "input": 1,
+        "input": 0.95,
         "output": 4.05,
-        "cache_read": 0.17
+        "cache_read": 0.16
       },
       "limit": {
         "context": 524288,
-        "output": 471859
+        "output": 262144
       }
     }
   },
@@ -101179,7 +101253,7 @@
     "family": "glm",
     "created_at": "2026-08-14 00:00:00 UTC",
     "context_window": 1048576,
-    "max_output_tokens": 943718,
+    "max_output_tokens": 131072,
     "knowledge_cutoff": null,
     "modalities": {
       "input": [
@@ -101201,9 +101275,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.2219,
-          "output_per_million": 3.39,
-          "cache_read_input_per_million": 0.1775
+          "input_per_million": 1.4,
+          "output_per_million": 4.4,
+          "cache_read_input_per_million": 0.14
         }
       }
     },
@@ -101270,13 +101344,13 @@
         }
       ],
       "cost": {
-        "input": 0.2219,
-        "output": 3.39,
-        "cache_read": 0.1775
+        "input": 1.4,
+        "output": 4.4,
+        "cache_read": 0.14
       },
       "limit": {
         "context": 1048576,
-        "output": 943718
+        "output": 131072
       }
     }
   },
@@ -102288,9 +102362,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.0264,
+          "input_per_million": 0.027,
           "output_per_million": 0.6,
-          "cache_read_input_per_million": 0.0264
+          "cache_read_input_per_million": 0.027
         }
       }
     },
@@ -102360,9 +102434,9 @@
         }
       ],
       "cost": {
-        "input": 0.0264,
+        "input": 0.027,
         "output": 0.6,
-        "cache_read": 0.0264
+        "cache_read": 0.027
       },
       "limit": {
         "context": 1048576,
@@ -102398,9 +102472,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.15312,
-          "output_per_million": 0.45936,
-          "cache_read_input_per_million": 0.004872
+          "input_per_million": 0.1431,
+          "output_per_million": 3.5,
+          "cache_read_input_per_million": 0.1431
         }
       }
     },
@@ -102469,9 +102543,9 @@
         }
       ],
       "cost": {
-        "input": 0.15312,
-        "output": 0.45936,
-        "cache_read": 0.004872
+        "input": 0.1431,
+        "output": 3.5,
+        "cache_read": 0.1431
       },
       "limit": {
         "context": 1048576,
@@ -102869,9 +102943,9 @@
     "pricing": {
       "text_tokens": {
         "standard": {
-          "input_per_million": 0.415,
+          "input_per_million": 0.3537,
           "output_per_million": 10,
-          "cache_read_input_per_million": 0.415
+          "cache_read_input_per_million": 0.3537
         }
       }
     },
@@ -102942,9 +103016,9 @@
         }
       ],
       "cost": {
-        "input": 0.415,
+        "input": 0.3537,
         "output": 10,
-        "cache_read": 0.415
+        "cache_read": 0.3537
       },
       "limit": {
         "context": 1048576,
@@ -103736,7 +103810,7 @@
       "text_tokens": {
         "standard": {
           "input_per_million": 0.02,
-          "output_per_million": 0.3,
+          "output_per_million": 0.55,
           "cache_read_input_per_million": 0.01
         }
       }
@@ -103807,7 +103881,7 @@
       ],
       "cost": {
         "input": 0.02,
-        "output": 0.3,
+        "output": 0.55,
         "cache_read": 0.01
       },
       "limit": {

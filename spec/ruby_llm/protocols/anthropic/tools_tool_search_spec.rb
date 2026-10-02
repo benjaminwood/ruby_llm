@@ -42,13 +42,13 @@ RSpec.describe RubyLLM::Protocols::Anthropic::Tools do
 
   describe '.format_tools' do
     it 'does not append the native search primitive when nothing is deferred' do
-      formatted = described_class.format_tools(a: tool('a', deferred: false), b: tool('b', deferred: false))
+      formatted = described_class.format_tools({ a: tool('a', deferred: false), b: tool('b', deferred: false) })
       expect(formatted.map { |t| t[:name] }).to contain_exactly('a', 'b')
       expect(formatted.map { |t| t[:type] }).not_to include('tool_search_tool_bm25_20251119')
     end
 
     it 'appends the native BM25 search primitive exactly once when any tool is deferred' do
-      formatted = described_class.format_tools(a: tool('a', deferred: false), b: tool('b', deferred: true))
+      formatted = described_class.format_tools({ a: tool('a', deferred: false), b: tool('b', deferred: true) })
       expect(formatted.last).to eq(described_class::NATIVE_TOOL_SEARCH)
       expect(formatted.count { |t| t[:type] == 'tool_search_tool_bm25_20251119' }).to eq(1)
     end
@@ -77,6 +77,7 @@ RSpec.describe RubyLLM::Protocols::Anthropic::Tools do
     it 'matches the BM25 server_tool_use and its result, but not other server tools' do
       expect(described_class.tool_search_block?(search_use)).to be(true)
       expect(described_class.tool_search_block?(search_result)).to be(true)
+      expect(described_class.tool_search_block?(search_use.merge('name' => 'tool_search_tool_regex'))).to be(true)
       expect(described_class.tool_search_block?({ 'type' => 'server_tool_use', 'name' => 'web_search' })).to be(false)
       expect(described_class.tool_search_block?({ 'type' => 'text', 'text' => 'hi' })).to be(false)
     end
@@ -227,6 +228,15 @@ RSpec.describe RubyLLM::Protocols::Anthropic::Tools do
       expect(weather[:defer_loading]).to be(true)
       expect(current).not_to have_key(:defer_loading)
       expect(tools.count { |t| t[:type] == 'tool_search_tool_bm25_20251119' }).to eq(1)
+    end
+
+    it 'uses a configured search tool instead of adding the BM25 primitive' do
+      chat.with_tools(WeatherLookupTool, CurrentTimeTool)
+      chat.with_provider_tools({ type: 'tool_search_tool_regex_20251119', name: 'tool_search_tool_regex' })
+      chat.ask_later('hi')
+
+      types = chat.render[:tools].filter_map { |t| t[:type] }
+      expect(types).to eq(%w[tool_search_tool_regex_20251119])
     end
   end
 end

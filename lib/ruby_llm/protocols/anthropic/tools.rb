@@ -27,7 +27,7 @@ module RubyLLM
         def tool_search_block?(block)
           return true if block['type'] == 'tool_search_tool_result'
 
-          block['type'] == 'server_tool_use' && block['name'] == NATIVE_TOOL_SEARCH[:name]
+          block['type'] == 'server_tool_use' && block['name'].to_s.start_with?('tool_search_tool_')
         end
 
         def format_tool_result(msg)
@@ -93,9 +93,11 @@ module RubyLLM
                 'Put the cache breakpoint on a non-deferred tool.'
         end
 
-        def format_tools(tools)
+        def format_tools(tools, provider_tools: [])
           formatted = tools.values.map { |tool| function_for(tool) }
-          formatted << NATIVE_TOOL_SEARCH.dup if formatted.any? { |entry| entry[:defer_loading] }
+          if formatted.any? { |entry| entry[:defer_loading] } && !search_tool_configured?(provider_tools)
+            formatted << NATIVE_TOOL_SEARCH.dup
+          end
           formatted
         end
 
@@ -104,8 +106,11 @@ module RubyLLM
         end
 
         def replay_search?(tools, provider_tools)
-          tools.values.any? { |tool| deferred?(tool) } ||
-            provider_tools.any? { |entry| (entry[:type] || entry['type']).to_s.start_with?('tool_search_tool_') }
+          tools.values.any? { |tool| deferred?(tool) } || search_tool_configured?(provider_tools)
+        end
+
+        def search_tool_configured?(provider_tools)
+          provider_tools.any? { |entry| (entry[:type] || entry['type']).to_s.start_with?('tool_search_tool_') }
         end
 
         def extract_tool_calls(data)

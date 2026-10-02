@@ -45,7 +45,7 @@ module RubyLLM
           build_base_payload(chat_messages, model, stream, thinking, citations: citations, caching:,
                                                                      max_output_tokens:,
                                                                      replay_search:).tap do |payload|
-            add_optional_fields(payload, system_content:, tools:, tool_prefs:, temperature:, schema:)
+            add_optional_fields(payload, system_content:, tools:, tool_prefs:, temperature:, schema:, provider_tools:)
             payload[:cache_control] = prompt_cache_control(caching) if caching
           end
         end
@@ -134,9 +134,10 @@ module RubyLLM
           rendered
         end
 
-        def add_optional_fields(payload, system_content:, tools:, tool_prefs:, temperature:, schema: nil)
+        def add_optional_fields(payload, system_content:, tools:, tool_prefs:, temperature:, schema: nil,
+                                provider_tools: [])
           if tools.any?
-            payload[:tools] = Tools.format_tools(tools)
+            payload[:tools] = Tools.format_tools(tools, provider_tools:)
             unless tool_prefs[:choice].nil? && tool_prefs[:calls].nil?
               payload[:tool_choice] = Tools.build_tool_choice(tool_prefs)
             end

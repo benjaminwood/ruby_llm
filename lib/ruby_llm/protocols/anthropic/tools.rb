@@ -76,21 +76,10 @@ module RubyLLM
             input_schema: input_schema || default_input_schema
           }
           declaration[:defer_loading] = true if deferred?(tool)
-          unless tool.provider_options.empty?
-            declaration = RubyLLM::Support::Utils.deep_merge(declaration, tool.provider_options)
-          end
 
-          reject_deferred_cache_control!(tool, declaration)
-          declaration
-        end
+          return declaration if tool.provider_options.empty?
 
-        def reject_deferred_cache_control!(tool, declaration)
-          return unless declaration[:defer_loading]
-          return unless declaration.key?(:cache_control) || declaration.key?('cache_control')
-
-          raise ArgumentError,
-                "Tool #{tool.name}: defer_loading cannot be combined with cache_control (Anthropic returns 400). " \
-                'Put the cache breakpoint on a non-deferred tool.'
+          RubyLLM::Support::Utils.deep_merge(declaration, tool.provider_options)
         end
 
         def format_tools(tools, provider_tools: [])

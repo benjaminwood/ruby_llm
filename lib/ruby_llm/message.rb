@@ -253,7 +253,6 @@ module RubyLLM
         server_tool_calls: list_to_h(server_tool_calls),
         raw_content: raw_content,
         raw_reasoning: raw_reasoning,
-        tool_references: (tool_references unless tool_references.empty?),
         mcp_result: mcp_result&.dump,
         finish_reason: finish_reason,
         cache_until_here: cache_until_here? || nil

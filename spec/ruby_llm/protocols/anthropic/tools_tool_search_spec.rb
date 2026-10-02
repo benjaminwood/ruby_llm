@@ -29,14 +29,10 @@ RSpec.describe RubyLLM::Protocols::Anthropic::Tools do
       expect(described_class.function_for(tool('a', deferred: true))[:defer_loading]).to be(true)
     end
 
-    it 'raises when a deferred tool also carries cache_control (Anthropic rejects it)' do
+    it 'renders cache_control alongside defer_loading and leaves the combination to Anthropic' do
       deferred = tool('a', deferred: true, provider_options: { cache_control: { type: 'ephemeral' } })
-      expect { described_class.function_for(deferred) }.to raise_error(ArgumentError, /cache_control/)
-    end
-
-    it 'allows cache_control on a non-deferred tool' do
-      bare = tool('a', deferred: false, provider_options: { cache_control: { type: 'ephemeral' } })
-      expect(described_class.function_for(bare)[:cache_control]).to eq({ type: 'ephemeral' })
+      expect(described_class.function_for(deferred))
+        .to include(defer_loading: true, cache_control: { type: 'ephemeral' })
     end
   end
 

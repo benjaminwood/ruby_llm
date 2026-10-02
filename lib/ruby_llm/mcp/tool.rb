@@ -27,6 +27,22 @@ module RubyLLM
       # The tool's name on the server.
       attr_reader :server_name
 
+      # The tool's +_meta+ as the server sent it: a Hash with String keys,
+      # empty when there is none. Extensions keep their own vocabulary
+      # there.
+      attr_reader :meta
+
+      # The URI of the tool's UI, the +ui://+ resource an MCP App renders
+      # next to the tool's results, or +nil+ for a tool without one. Read
+      # it with MCP#resource.
+      attr_reader :ui_uri
+
+      # Who may call the tool, as Symbols: +:model+ when chats offer it to
+      # the model, +:app+ when a UI from the same server may call it. Tools
+      # say nothing about it unless they belong to an MCP App, which makes
+      # them <tt>[:model, :app]</tt>.
+      attr_reader :visibility
+
       attr_reader :fixed_arguments, :wrap # :nodoc:
 
       def initialize(mcp, definition, prefix: nil, as: nil, description: nil, fixed_arguments: {}, wrap: nil) # :nodoc:
@@ -38,6 +54,9 @@ module RubyLLM
         @fixed_arguments = fixed_arguments.transform_keys(&:to_sym)
         @wrap = wrap
         @annotations = definition['annotations'] || {}
+        @meta = definition['_meta'] || {}
+        @ui_uri = Apps.uri(meta)
+        @visibility = Apps.visibility(meta)
         @parameters_schema = model_schema(definition['inputSchema'] || {})
       end
 
@@ -70,18 +89,26 @@ module RubyLLM
         @mcp.requires_approval?(self)
       end
 
-      # Calls the tool on the server and returns what the model sees: the
-      # result's content, what the +wrap:+ method made of it, or
-      # <tt>{ error: }</tt> when the tool failed. Raises
-      # MCP::InputRequiredError when the server needs input that no
+      # Calls the tool on the server and returns its MCP::Result, what the
+      # +wrap:+ method made of it, or <tt>{ error: }</tt> when the tool
+      # failed. A chat sends the model the result's content. When the
+      # server runs the call as a task, returns the MCP::Task without
+      # waiting, and a chat pauses the tool call until the task is done.
+      # Raises MCP::InputRequiredError when the server needs input that no
       # MCP.before_input_request callback gave.
       def call(**arguments)
         @mcp.run(self, arguments.except(:tool_call))
       end
 
-      # Resumes a call that paused on input requests, now answered.
+      # Resumes a call that paused on input requests, now answered, or on a
+      # task, which it checks on once.
       def resume(input, arguments) # :nodoc:
         @mcp.run(self, arguments, input:)
+      end
+
+      # Returns the MCP::Task a call paused on, from its saved state.
+      def task(state, tool_call: nil) # :nodoc:
+        Task.load(@mcp, state, tool_call:)
       end
 
       private

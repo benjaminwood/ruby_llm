@@ -9,7 +9,10 @@ module RubyLLM
     #   result.text        # => "Found 3 issues..."
     #   result.structured  # => { "issues" => [...] }
     #   result.attachments # => [#<RubyLLM::Attachment ...>]
+    #   result.meta        # => { "com.linear/request_id" => "..." }
     #
+    # In a chat, the result of a tool with a UI stays on its tool result
+    # message as Message#mcp_result, so your app can render the UI again.
     class Result
       include Support::Inspectable
 
@@ -22,9 +25,23 @@ module RubyLLM
       # The structured content, parsed from JSON, or +nil+.
       attr_reader :structured
 
-      def initialize(data) # :nodoc:
+      # The result's +_meta+ as the server sent it: a Hash with String
+      # keys, empty when there is none.
+      attr_reader :meta
+
+      # The URI of the UI that renders the result, from its tool's
+      # MCP::Tool#ui_uri, or +nil+ for a tool without one.
+      attr_reader :ui_uri
+
+      def self.load(data) # :nodoc:
+        new(data['result'], data['ui_uri'])
+      end
+
+      def initialize(data, ui_uri = nil) # :nodoc:
         @data = data
+        @ui_uri = ui_uri
         @structured = data['structuredContent']
+        @meta = data['_meta'] || {}
         @text, @attachments = Content.read(data['content'])
       end
 
@@ -45,10 +62,14 @@ module RubyLLM
         @data
       end
 
+      def dump # :nodoc:
+        { 'ui_uri' => ui_uri, 'result' => to_h }
+      end
+
       private
 
       def inspect_attributes
-        { text:, structured:, attachments: attachments.size.nonzero?, error: error? || nil }
+        { text:, structured:, attachments: attachments.size.nonzero?, error: error? || nil, ui_uri: }
       end
     end
   end

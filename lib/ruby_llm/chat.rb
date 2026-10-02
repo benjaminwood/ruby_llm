@@ -149,7 +149,7 @@ module RubyLLM
 
     # Adds +message+ as a user message and runs the conversation loop,
     # executing tools until the model answers or a call needs approval.
-    # Returns the latest assistant Message; check #awaiting_approval? before
+    # Returns the latest assistant Message; check #waiting? before
     # treating it as a final answer. Attach files with +with:+. An
     # MCP::Prompt adds its messages instead.
     # A given block receives streamed Chunk objects as they arrive.
@@ -212,20 +212,24 @@ module RubyLLM
     # was declared with Tool.requires_approval only execute once #approve
     # records a decision; denied calls receive a structured denial result,
     # and undecided calls stay pending. Does nothing when no tool calls
-    # are pending. The chat is then ready for the next #generate, or the
-    # next batch round. Returns +self+.
+    # are pending. Calls paused on an MCP::Task check on it once. The chat
+    # is then ready for the next #generate, or the next batch round.
+    # Returns +self+.
     def run_tools
       raise_if_cancelled!
 
       message = pending_tool_response
       execute_pending_tool_calls(message) if message
       self
+    rescue CancelledError
+      cancel_tasks
+      raise
     end
 
     # Advances the conversation by one move: runs the pending tool calls
     # if any are unanswered, otherwise generates the next response.
     # Returns the Message that move produced, and +nil+ once there is
-    # nothing left to do or the loop is parked on an approval.
+    # nothing left to do or the chat is #waiting?.
     def step(&)
       return if complete?
 
@@ -235,18 +239,23 @@ module RubyLLM
       before = messages.length
       run_tools
       messages.last if messages.length > before
+    rescue CancelledError
+      cancel_tasks
+      raise
     end
 
-    # Runs the conversation loop until #complete?, #awaiting_approval?, or
-    # #awaiting_input? is +true+. Returns the last conversation Message, or
-    # +nil+ for an empty chat. Used after #ask_later; #ask calls #complete
-    # for you.
+    # Runs the conversation loop until #complete? or #waiting? is +true+.
+    # Returns the last conversation Message, or +nil+ for an empty chat.
+    # Used after #ask_later; #ask calls #complete for you.
     #
     # When a pending tool call requires approval and no decision has been
     # recorded, or waits on input for an MCP server, the loop pauses.
     # Record #approve, #deny, #answer, or #decline decisions, then call
-    # #complete again to continue.
+    # #complete again to continue. A tool call that waits on an MCP::Task
+    # pauses the loop too, and each #complete checks on the task once,
+    # without waiting, and continues once it is done.
     def complete(&)
+      run_tools if awaiting_tasks?
       step(&) until complete? || waiting?
       last_non_system_message || messages.last
     end
@@ -280,6 +289,23 @@ module RubyLLM
     # +self+.
     def deny(tool_call)
       record_tool_call_decision(tool_call, false)
+    end
+
+    # Returns whether the conversation can't continue until something
+    # outside it happens: every remaining pending tool call waits on an
+    # approval decision, an answer to an MCP input request, or an MCP task.
+    # #complete stops here, and #awaiting_approval?, #awaiting_input?, and
+    # #awaiting_tasks? tell what it waits on. Stop a loop you drive with
+    # #step here too:
+    #
+    #   chat.step until chat.complete? || chat.waiting?
+    #
+    def waiting?
+      response = pending_tool_response
+      return false unless response
+
+      pending = pending_tool_calls(response).values
+      pending.any? && pending.all? { |tool_call| approval_pending?(tool_call) || paused?(tool_call) }
     end
 
     # Returns whether the conversation can make no progress without an
@@ -329,9 +355,40 @@ module RubyLLM
       return [] unless response
 
       pending_tool_calls(response).values.flat_map do |tool_call|
-        Array(tool_call_input(tool_call)&.fetch('requests'))
+        Array(tool_call_input(tool_call)&.[]('requests'))
           .map { |data| MCP::InputRequest.from_h(data, tool_call:) }
           .reject(&:answered?)
+      end
+    end
+
+    # Returns whether the conversation can make no progress until MCP
+    # servers finish tasks: every remaining pending tool call waits on a
+    # task, input, or an approval decision, and at least one waits on a
+    # task. #complete checks on the tasks again.
+    #
+    #   chat.ask "Render the quarterly report"
+    #   chat.awaiting_tasks?  # => true
+    #   sleep chat.pending_tasks.first.poll_interval
+    #   chat.complete
+    #
+    def awaiting_tasks?
+      waiting? && pending_tasks.any?
+    end
+
+    # Returns the MCP::Task objects that MCP tool calls wait on, as they
+    # were when the chat last checked. MCP::Task#refresh checks on one
+    # without resuming the chat; #complete checks on all of them and
+    # resumes their calls once they are done.
+    #
+    #   chat.pending_tasks.each { |task| puts "#{task.tool_call.name}: #{task.status_message}" }
+    #
+    def pending_tasks
+      response = pending_tool_response
+      return [] unless response
+
+      pending_tool_calls(response).values.filter_map do |tool_call|
+        state = tool_call_input(tool_call)
+        task_for(tool_call, state) if state&.key?('task') && !unanswered?(state)
       end
     end
 
@@ -351,7 +408,8 @@ module RubyLLM
 
     # Cancels the current in-flight chat operation. The next cancellation
     # checkpoint raises CancelledError and clears the flag so the chat can be
-    # reused.
+    # reused. The MCP tasks that pending tool calls wait on are cancelled
+    # then too; see #pending_tasks.
     def cancel
       @cancelled = true
       self
@@ -409,11 +467,15 @@ module RubyLLM
 
     # Returns the tools the model can call, as a Hash of tool name Symbols
     # to Tool instances: those registered with #with_tools and those of the
-    # MCP servers connected with #with_mcp.
+    # MCP servers connected with #with_mcp. MCP tools that only the UI of
+    # an MCP App may call are left out; see MCP::Tool#visibility.
     #
     # Raises ArgumentError when two tools share a name.
     def tools
-      mcp.flat_map(&:tools).each_with_object(@tools.dup) do |tool, tools|
+      offered = @tools.reject { |_, tool| hidden_from_model?(tool) }
+      mcp.flat_map(&:tools).each_with_object(offered) do |tool, tools|
+        next if hidden_from_model?(tool)
+
         name = tool.name.to_sym
         raise ArgumentError, "Two tools are named #{name}. Rename one with `tool :#{name}, as:`" if tools.key?(name)
 
@@ -985,7 +1047,7 @@ module RubyLLM
       raise PendingToolCallsError,
             "The last response has unanswered tool calls (#{names.join(', ')}). " \
             'Run complete, recording approve or deny decisions for calls that ' \
-            'require approval and answering pending inputs, before asking again.'
+            'require approval, answering pending inputs, and waiting for tasks, before asking again.'
     end
 
     private
@@ -1469,7 +1531,8 @@ module RubyLLM
 
     def add_tool_result_message(tool_call, result)
       content, attachments = Tool.split_result(result)
-      message = add_message role: :tool, content:, attachments:, tool_call_id: tool_call.id
+      mcp_result = result if result.is_a?(MCP::Result) && result.ui_uri
+      message = add_message(role: :tool, content:, attachments:, tool_call_id: tool_call.id, mcp_result:)
       run_callbacks(:after_message, message)
       message
     end
@@ -1517,23 +1580,54 @@ module RubyLLM
     def invoke_tool(tool, tool_call, arguments)
       input = tool_call_input(tool_call)
       result = input ? tool.resume(input, arguments) : tool.call(**arguments, tool_call:)
+      return pause_tool_call(tool_call, result.to_h) if result.is_a?(MCP::Task)
+
       record_tool_call_input(tool_call, nil) if input
       result
     rescue MCP::InputRequiredError => e
-      record_tool_call_input(tool_call, e.to_h)
+      pause_tool_call(tool_call, e.to_h)
+    end
+
+    def pause_tool_call(tool_call, state)
+      record_tool_call_input(tool_call, state)
       PAUSED
     end
 
-    def waiting?
-      response = pending_tool_response
-      return false unless response
-
-      pending = pending_tool_calls(response).values
-      pending.any? && pending.all? { |tool_call| approval_pending?(tool_call) || input_pending?(tool_call) }
+    def paused?(tool_call)
+      state = tool_call_input(tool_call)
+      !state.nil? && (unanswered?(state) || state.key?('task'))
     end
 
     def input_pending?(tool_call)
-      Array(tool_call_input(tool_call)&.fetch('requests')).any? { |request| request['response'].nil? }
+      unanswered?(tool_call_input(tool_call))
+    end
+
+    def unanswered?(state)
+      Array(state&.[]('requests')).any? { |request| request['response'].nil? }
+    end
+
+    def task_for(tool_call, state)
+      tool = tools[tool_call.name.to_sym]
+      tool.respond_to?(:task) ? tool.task(state, tool_call:) : MCP::Task.load(nil, state, tool_call:)
+    end
+
+    def cancel_tasks
+      response = pending_tool_response
+      return unless response
+
+      pending_tool_calls(response).each_value do |tool_call|
+        state = tool_call_input(tool_call)
+        next unless state&.key?('task')
+
+        cancel_task(task_for(tool_call, state))
+        record_tool_call_input(tool_call, nil)
+      end
+    end
+
+    def cancel_task(task)
+      task.cancel
+    rescue Error, ConfigurationError, Faraday::Error => e
+      RubyLLM.logger.debug { "RubyLLM could not cancel task #{task.id}: #{e.message}" }
     end
 
     def tool_call_input(tool_call)
@@ -1617,6 +1711,10 @@ module RubyLLM
 
     def last_non_system_message
       messages.reverse.find { |message| message.role != :system }
+    end
+
+    def hidden_from_model?(tool)
+      tool.is_a?(MCP::Tool) && !tool.visibility.include?(:model)
     end
 
     def pending_tool_response

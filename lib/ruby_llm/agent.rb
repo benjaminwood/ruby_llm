@@ -84,8 +84,8 @@ module RubyLLM
     PASSTHROUGH_CHAT_DELEGATES = %i[
       model provider messages tools mcp provider_tools tool_options provider_options headers schema concurrency
       caching citations compaction context end_user fallbacks thinking temperature max_output_tokens
-      each complete? cancelled? awaiting_approval? pending_approvals awaiting_input? pending_inputs
-      add_message add_completion tokens cost render
+      each complete? cancelled? waiting? awaiting_approval? pending_approvals awaiting_input? pending_inputs
+      awaiting_tasks? pending_tasks add_message add_completion tokens cost render
     ].freeze
 
     COPIED_INHERITED_CONFIG = (%i[
@@ -539,8 +539,8 @@ module RubyLLM
       #   chat = WorkAssistant.create(user: current_user)
       #
       # Raises ArgumentError if ::chat_model is not configured.
-      def create(**kwargs)
-        with_rails_chat_record(:create, **kwargs)
+      def create(**)
+        with_rails_chat_record(:create, **)
       end
 
       # Like ::create, but calls the model's <tt>create!</tt>, raising if
@@ -548,8 +548,8 @@ module RubyLLM
       #
       #   chat = WorkAssistant.create!(user: current_user)
       #
-      def create!(**kwargs)
-        with_rails_chat_record(:create!, **kwargs)
+      def create!(**)
+        with_rails_chat_record(:create!, **)
       end
 
       # Finds the ::chat_model record with +id+ and applies this agent's
@@ -1279,6 +1279,12 @@ module RubyLLM
     # Delegates to Chat#cancelled?. See that method for arguments and return values.
 
     ##
+    # :method: waiting?
+    # :call-seq: waiting?()
+    #
+    # Delegates to Chat#waiting?. See that method for arguments and return values.
+
+    ##
     # :method: awaiting_approval?
     # :call-seq: awaiting_approval?()
     #
@@ -1301,6 +1307,18 @@ module RubyLLM
     # :call-seq: pending_inputs()
     #
     # Delegates to Chat#pending_inputs. See that method for arguments and return values.
+
+    ##
+    # :method: awaiting_tasks?
+    # :call-seq: awaiting_tasks?()
+    #
+    # Delegates to Chat#awaiting_tasks?. See that method for arguments and return values.
+
+    ##
+    # :method: pending_tasks
+    # :call-seq: pending_tasks()
+    #
+    # Delegates to Chat#pending_tasks. See that method for arguments and return values.
 
     ##
     # :method: add_message

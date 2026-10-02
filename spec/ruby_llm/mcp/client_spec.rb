@@ -64,20 +64,35 @@ RSpec.describe RubyLLM::MCP::Client do
 
       expect(client.list('tools/list', 'tools').size).to eq(9)
     end
+
+    it 'reports a change once the request that carried it is answered, so the report can make requests' do
+      sizes = []
+      changing = described_class.new(RubyLLM::MCP::Stdio.new([RbConfig.ruby, server], env:)) do
+        sizes << changing.list('tools/list', 'tools').size
+      end
+
+      changing.request('spec/change_tools')
+
+      expect(sizes).to eq([10])
+    ensure
+      changing&.close
+    end
   end
 
   describe 'protocol versions' do
     let(:fake_server) do
       Class.new do
-        attr_reader :sent
+        attr_reader :sent, :params
 
         def initialize(&answer)
           @answer = answer
           @sent = []
+          @params = {}
         end
 
         def request(message, **)
           @sent << message[:method]
+          @params[message[:method]] = message[:params]
           reply = @answer.call(message[:method], @sent.count(message[:method]))
           { 'jsonrpc' => '2.0', 'id' => message[:id] }.merge(reply)
         end
@@ -139,6 +154,15 @@ RSpec.describe RubyLLM::MCP::Client do
 
         expect(mcp_client.version).to eq(version)
       end
+    end
+
+    it 'declares only its extensions in the handshake' do
+      server = legacy('2025-06-18')
+      capabilities = { elicitation: { form: {} }, extensions: { 'com.example/audit' => {} } }
+
+      described_class.new(server, capabilities:).server
+
+      expect(server.params['initialize'][:capabilities]).to eq(extensions: { 'com.example/audit' => {} })
     end
 
     it 'disconnects from a server that answers the handshake with a version it does not speak' do

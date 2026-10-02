@@ -468,6 +468,13 @@ module RubyLLM
       # Delegates to Chat#mcp. See that method for arguments and return values.
 
       ##
+      # :method: waiting?
+      # :call-seq: waiting?
+      #
+      # Delegates to Chat#waiting?. Approvals, answers, and tasks persist on
+      # their tool calls, so any process sees what the chat waits on.
+
+      ##
       # :method: awaiting_input?
       # :call-seq: awaiting_input?
       #
@@ -479,6 +486,19 @@ module RubyLLM
       #
       # Delegates to Chat#pending_inputs. Requests persist on their tool
       # calls, so they survive restarts.
+
+      ##
+      # :method: awaiting_tasks?
+      # :call-seq: awaiting_tasks?
+      #
+      # Delegates to Chat#awaiting_tasks?. See that method for arguments and return values.
+
+      ##
+      # :method: pending_tasks
+      # :call-seq: pending_tasks
+      #
+      # Delegates to Chat#pending_tasks. Tasks persist on their tool calls,
+      # so any process can check on them and resume the chat.
 
       CHAINABLE_CHAT_DELEGATES.each do |name|
         define_method(name) do |*args, **kwargs, &block|
@@ -493,8 +513,8 @@ module RubyLLM
 
       PASSTHROUGH_CHAT_DELEGATES = %i[
         caching citations compaction concurrency end_user fallbacks headers max_output_tokens provider_options
-        schema provider_tools temperature thinking tool_options tools mcp awaiting_input? pending_inputs
-        add_completion count_tokens each render
+        schema provider_tools temperature thinking tool_options tools mcp waiting? awaiting_input? pending_inputs
+        awaiting_tasks? pending_tasks add_completion count_tokens each render
       ].freeze
 
       ##
@@ -665,9 +685,9 @@ module RubyLLM
 
       # Advances the conversation by one move: runs the pending tool calls if
       # there are any, otherwise generates a response. Returns +nil+ once the
-      # chat is complete or waiting for approval. See RubyLLM::Chat#step.
+      # chat is complete or #waiting?. See RubyLLM::Chat#step.
       #
-      #   chat.step until chat.complete? || chat.awaiting_approval?
+      #   chat.step until chat.complete? || chat.waiting?
       #
       def step(...)
         to_llm.step(...)
@@ -865,12 +885,12 @@ module RubyLLM
 
       def persisted_tool_call_input(tool_call)
         record = RubyLLM::ActiveRecord::ToolCall.uncached { find_tool_call(tool_call.id) }
-        record.pending_input if record&.has_attribute?(:pending_input)
+        record.mcp_state if record&.has_attribute?(:mcp_state)
       end
 
       def persist_tool_call_input(tool_call, input)
         record = find_tool_call(tool_call.id)
-        record.update!(pending_input: input) if record&.has_attribute?(:pending_input)
+        record.update!(mcp_state: input) if record&.has_attribute?(:mcp_state)
       end
 
       def persisted_tool_call_approval(tool_call)
@@ -992,7 +1012,7 @@ module RubyLLM
         transaction do
           @message.assign_attributes(attrs)
           @message.save!
-          tool_call&.update!(result: @message)
+          tool_call&.update!(tool_result_attributes(tool_call, message))
 
           persist_content(@message, message.attachments) if message.attachments.any?
           persist_tool_calls(message.tool_calls) if message.tool_calls.present?
@@ -1011,6 +1031,12 @@ module RubyLLM
         assign_supported_attribute(attrs, :finish_reason, message.finish_reason)
         assign_supported_attribute(attrs, :cache_until_here, message.cache_until_here?)
         attrs
+      end
+
+      def tool_result_attributes(tool_call, message)
+        attributes = { result: @message }
+        attributes[:mcp_result] = message.mcp_result&.dump if tool_call.has_attribute?(:mcp_result)
+        attributes
       end
 
       def assign_supported_attribute(attributes, name, value)

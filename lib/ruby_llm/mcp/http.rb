@@ -12,6 +12,15 @@ module RubyLLM
     # When a stream ends before the response, 2026-07-28 sends the request
     # again with a new ID, while older servers resume the stream from its
     # last event ID after the wait they ask for, a few times at most.
+    #
+    # A subscription's stream stays open, so it gets a connection of its
+    # own: callbacks it runs can make requests of their own, even through
+    # adapters that keep one connection per thread. Older servers send
+    # changes on the session's event stream instead.
+    #
+    # A server's own requests, on any stream, are answered right away on
+    # another connection: pings with a result, the rest with method not
+    # found, so a server never waits on RubyLLM.
     class HTTP # :nodoc:
       LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
       HEADER_SAFE = /\A[\x21-\x7E](?:[\x20-\x7E]*[\x21-\x7E])?\z/
@@ -20,9 +29,6 @@ module RubyLLM
       RECONNECTS = 3
       RECONNECT_DELAY = 1
       CHECK_INTERVAL = 0.1
-
-      # Raised when a server has ended the session a request belonged to.
-      class SessionExpired < Error; end
 
       def self.secure?(url)
         uri = URI(url.to_s)
@@ -35,7 +41,7 @@ module RubyLLM
         LOOPBACK_HOSTS.include?(URI(url.to_s).hostname)
       end
 
-      def initialize(url, headers: {}, timeout: nil, unauthorized: nil, config: RubyLLM.config)
+      def initialize(url, headers: {}, timeout: nil, unauthorized: nil, responded: nil, config: RubyLLM.config)
         @url = URI(url)
         unless self.class.secure?(@url)
           raise ArgumentError, "MCP servers must use HTTPS without credentials in the URL: #{url}"
@@ -43,11 +49,15 @@ module RubyLLM
 
         @headers = headers
         @unauthorized = unauthorized
+        @responded = responded
         @timeout = timeout || config.request_timeout
-        @connection = Transport::Connection.basic(config) do |faraday|
-          faraday.options.timeout = timeout if timeout
-          faraday.adapter config.faraday_adapter
+        @connect = lambda do
+          Transport::Connection.basic(config) do |faraday|
+            faraday.options.timeout = timeout if timeout
+            faraday.adapter config.faraday_adapter
+          end
         end
+        @connection = @connect.call
       end
 
       def request(message, version:, timeout: nil, headers: {}, &)
@@ -75,42 +85,57 @@ module RubyLLM
         notify(notification, version:) unless version == Client::VERSION
       end
 
+      def listen(message, version:, &)
+        return listen_to_session(version:, &) unless message
+
+        stream = post(message, version:, connection: streams, &)
+        stream.answer || raise(Error, "#{@url.host} closed the subscription")
+      rescue Faraday::Error => e
+        raise Error, e.message
+      end
+
       def close
         session = @session
         @session = nil
         return unless session
 
-        @connection.delete(@url) do |request|
+        response = @connection.delete(@url) do |request|
           request.headers.update({ 'MCP-Protocol-Version' => @version, 'Mcp-Session-Id' => session }.compact)
-          request.headers.update(custom_headers)
+          request.headers.update(custom_headers('DELETE'))
           request.options.timeout = CLOSE_TIMEOUT
         end
-      rescue Faraday::Error
-        nil
+        responded(response.headers)
+      rescue Faraday::Error => e
+        responded(e.response[:headers]) if e.response
       end
 
       private
 
-      def post(message, version:, timeout: nil, params: {}, retried: false, &on_notification)
+      def post(message, version:, timeout: nil, params: {}, connection: @connection, recovered: [], &on_notification)
         session = @session unless message[:method] == 'initialize'
-        stream = Stream.new(message[:id], &on_notification)
+        stream = Stream.new(message[:id], &receiver(version, on_notification))
         stream.read do
-          @connection.post(@url) do |request|
+          connection.post(@url) do |request|
             request.headers.update(headers(message, version, session))
             params.each { |name, value| request.headers["Mcp-Param-#{name}"] = header_value(value) }
             request.body = JSON.generate(message)
             stream.attach(request, timeout)
           end
         end
+        responded(stream.headers)
         remember(message, version, stream.headers)
         stream
       rescue Faraday::Error => e
         raise unless e.response
+
+        responded(e.response[:headers])
         return stream if answered?(stream)
         raise SessionExpired, "#{@url.host} ended the session" if expired?(e.response, message, session)
 
-        if reauthorized?(e.response, retried)
-          return post(message, version:, timeout:, params:, retried: true, &on_notification)
+        recovery = recover(e.response, recovered)
+        if recovery
+          return post(message, version:, timeout:, params:, connection:, recovered: [*recovered, recovery],
+                      &on_notification)
         end
 
         raise failure(e.response, stream)
@@ -118,17 +143,56 @@ module RubyLLM
 
       def resume(stream, version:, timeout:, &on_notification)
         wait(stream.retry_after || RECONNECT_DELAY)
-        resumed = Stream.new(stream.id, &on_notification)
-        resumed.read do
-          @connection.get(@url) do |request|
-            request.headers.update({ 'Accept' => 'text/event-stream', 'MCP-Protocol-Version' => version,
-                                     'Mcp-Session-Id' => @session, 'Last-Event-ID' => stream.last_event_id }.compact)
-            request.headers.update(custom_headers)
-            resumed.attach(request, timeout)
-          end
-        end
+        resumed = Stream.new(stream.id, &receiver(version, on_notification))
+        get(resumed, version:, timeout:, last_event_id: stream.last_event_id)
       rescue Faraday::Error
         resumed
+      end
+
+      def listen_to_session(version:, &on_notification)
+        stream = Stream.new(nil, &receiver(version, on_notification))
+        get(stream, version:, connection: streams)
+        nil
+      rescue Faraday::Error => e
+        raise Error, e.message unless e.response
+        raise SessionExpired, "#{@url.host} ended the session" if e.response[:status] == 404 && @session
+        raise Error.new("#{@url.host} sends no events", code: Client::METHOD_NOT_FOUND) if e.response[:status] == 405
+
+        raise failure(e.response, stream)
+      end
+
+      def get(stream, version:, timeout: nil, last_event_id: nil, connection: @connection)
+        stream.read do
+          connection.get(@url) do |request|
+            request.headers.update({ 'Accept' => 'text/event-stream', 'MCP-Protocol-Version' => version,
+                                     'Mcp-Session-Id' => @session, 'Last-Event-ID' => last_event_id }.compact)
+            request.headers.update(custom_headers('GET'))
+            stream.attach(request, timeout)
+          end
+        end
+        responded(stream.headers)
+        stream
+      rescue Faraday::Error => e
+        responded(e.response[:headers]) if e.response
+        raise
+      end
+
+      def streams
+        @streams ||= @connect.call
+      end
+
+      def receiver(version, on_notification)
+        ->(message) { message.key?('id') ? answer(message, version:) : on_notification&.call(message) }
+      end
+
+      def answer(request, version:)
+        post(Client.reply(request), version:, connection: answers)
+      rescue RubyLLM::Error, Faraday::Error => e
+        RubyLLM.logger.debug { "#{@url.host} did not take the answer to #{request['method']}: #{e.message}" }
+      end
+
+      def answers
+        @answers ||= @connect.call
       end
 
       def resumable?(stream, limit)
@@ -161,11 +225,18 @@ module RubyLLM
         stream.answer&.key?('result')
       end
 
-      def reauthorized?(response, retried)
+      # Returns how a rejected request recovered, such as with a new token
+      # or a nonce for its proof, unless it already recovered that way.
+      def recover(response, recovered)
         status = response[:status]
-        return false unless @unauthorized && (status == 403 || (status == 401 && !retried))
+        return unless @unauthorized && [401, 403].include?(status)
 
-        @unauthorized.call(response[:headers] || {}, status) && status == 401
+        recovery = @unauthorized.call(response[:headers] || {}, status, recovered)
+        recovery if status == 401
+      end
+
+      def responded(headers)
+        @responded&.call(headers || {})
       end
 
       def headers(message, version, session)
@@ -175,12 +246,13 @@ module RubyLLM
           'MCP-Protocol-Version' => version,
           'Mcp-Session-Id' => session,
           'Mcp-Method' => message[:method],
-          'Mcp-Name' => header_value(message.dig(:params, :name) || message.dig(:params, :uri))
-        }.compact.merge(custom_headers)
+          'Mcp-Name' => header_value(message.dig(:params, :name) || message.dig(:params, :uri) ||
+                                     message.dig(:params, :taskId))
+        }.compact.merge(custom_headers('POST'))
       end
 
-      def custom_headers
-        @headers.respond_to?(:call) ? @headers.call : @headers
+      def custom_headers(verb)
+        @headers.respond_to?(:call) ? @headers.call(verb) : @headers
       end
 
       def header_value(value)
@@ -208,18 +280,21 @@ module RubyLLM
                               body: response[:body])
       end
 
-      # Collects the JSON-RPC messages of one response, yielding
-      # notifications as they arrive. The body is either a single JSON value
-      # or a server-sent event stream; the first character tells them apart.
-      # An event stream stops being read once it carries the answer to
-      # request +id+, since servers may keep it open, and one that breaks
-      # midway counts as ended.
+      # Collects the answers in one response and yields the messages the
+      # server sends of its own, notifications and requests, as they arrive.
+      # The body is either a single JSON value or a server-sent event
+      # stream; the first character tells them apart. An event stream stops
+      # being read once it carries the answer to request +id+, since servers
+      # may keep it open, and one that breaks midway counts as ended. Only
+      # answers are kept, so a stream that stays open does not grow.
+      # Faraday 2 passes the response headers with each chunk; Faraday 1
+      # has them only once the response ends.
       class Stream # :nodoc:
         attr_reader :id, :headers
 
-        def initialize(id, &on_notification)
+        def initialize(id, &on_message)
           @id = id
-          @on_notification = on_notification
+          @on_message = on_message
           @parser = Transport::EventStreamParser.new
           @body = +''
           @replies = []
@@ -232,7 +307,8 @@ module RubyLLM
         end
 
         def read(&)
-          catch(self, &)
+          response = catch(self, &)
+          @headers = response.headers if @headers.empty? && response.respond_to?(:headers)
           self
         rescue Faraday::ConnectionFailed
           raise unless events?
@@ -243,10 +319,10 @@ module RubyLLM
         def feed(chunk, _size = nil, env = nil)
           Support::Cancellation.check
           @headers = env.response_headers if env&.response_headers
-          @body << chunk
-          return if @events == false
+          return @body << chunk if @events == false
 
           if @events.nil?
+            @body << chunk
             return if @body.strip.empty?
 
             @events = !@body.lstrip.start_with?('{', '[')
@@ -292,8 +368,7 @@ module RubyLLM
         def receive(data)
           parsed = JSON.parse(data)
           (parsed.is_a?(Array) ? parsed : [parsed]).grep(Hash).each do |reply|
-            @replies << reply
-            @on_notification&.call(reply) if reply['method'] && !reply.key?('id')
+            reply['method'] ? @on_message&.call(reply) : @replies << reply
           end
         rescue JSON::ParserError
           RubyLLM.logger.debug { 'MCP server sent a message that is not JSON' }

@@ -9,10 +9,35 @@ module RubyLLM
     # per line on stdin and writes one per line on stdout. Reads never block
     # past the deadline, even on a partial line. It starts on the
     # first request, restarts after it exits, and handles one request at a
-    # time. Its stderr is the parent's.
+    # time. Its stderr is the parent's. A server that predates 2026-07-28
+    # keeps its session for the life of its process, so after a restart its
+    # requests raise SessionExpired until the client initializes it again.
+    #
+    # Subscriptions share the channel, so whichever thread reads a message
+    # that belongs to one hands it to the subscription's listener: a
+    # request waiting for its answer, or the listener itself while no
+    # request reads. A listener stops when CancelledError is raised in its
+    # thread, so it reads and writes with that deferred.
     class Stdio # :nodoc:
       SHUTDOWN_GRACE = 2
       CHECK_INTERVAL = 0.5
+      SUBSCRIPTION_ID = 'io.modelcontextprotocol/subscriptionId'
+
+      # The messages of the subscription opened by request +id+, or with no
+      # +id+, the changes a server that predates subscriptions announces.
+      Subscription = Struct.new(:id, :messages) do
+        def claims?(message)
+          return !message.key?('id') && Client::CHANGES.include?(message['method']) if id.nil?
+
+          params = message['params'].is_a?(Hash) ? message['params'] : {}
+          params.dig('_meta', SUBSCRIPTION_ID) == id || answer?(message) ||
+            (message['method'] == 'notifications/cancelled' && params['requestId'] == id)
+        end
+
+        def answer?(message)
+          !id.nil? && message['id'] == id && !message.key?('method')
+        end
+      end
 
       def initialize(command, env: {}, directory: nil, timeout: nil, config: RubyLLM.config)
         @command = Array(command).map(&:to_s)
@@ -20,11 +45,14 @@ module RubyLLM
         @directory = directory&.to_s
         @timeout = timeout || config.request_timeout
         @lock = Mutex.new
+        @subscriptions = []
       end
 
-      def request(message, timeout: nil, **, &)
+      def request(message, version: nil, timeout: nil, **, &)
         @lock.synchronize do
+          check_session(version)
           write(message)
+          @session = @process if message[:method] == 'initialize'
           await(message[:id], timeout || @timeout, &)
         end
       end
@@ -38,11 +66,91 @@ module RubyLLM
         notify(notification)
       end
 
+      def listen(message, **)
+        subscription = Subscription.new(message&.dig(:id), Queue.new)
+        process = uninterrupted { @lock.synchronize { subscribe(subscription, message) } }
+        loop do
+          until subscription.messages.empty?
+            reply = subscription.messages.pop
+            return reply if subscription.answer?(reply)
+
+            yield reply
+          end
+          raise Error, "#{name} exited" unless @process.equal?(process)
+
+          receive(subscription)
+        end
+      rescue IOError
+        raise Error, "#{name} exited"
+      ensure
+        uninterrupted { @lock.synchronize { @subscriptions.delete(subscription) } }
+      end
+
       def close
         @lock.synchronize { stop }
       end
 
       private
+
+      def check_session(version)
+        return if version.nil? || version == Client::VERSION || (@process&.alive? && @process.equal?(@session))
+
+        raise SessionExpired, "#{name} exited"
+      end
+
+      def subscribe(subscription, message)
+        raise Error, "#{name} exited" unless message || @process&.alive?
+
+        @subscriptions << subscription
+        write(message) if message
+        @process
+      end
+
+      def receive(subscription)
+        read = uninterrupted do
+          next false unless @lock.try_lock
+
+          begin
+            drain
+          ensure
+            @lock.unlock
+          end
+          true
+        end
+        return sleep(CHECK_INTERVAL) unless read
+
+        @stdout.wait_readable(CHECK_INTERVAL) if subscription.messages.empty?
+      end
+
+      def drain
+        loop do
+          while (line = @buffer.slice!(/\A[^\n]*\n/))
+            message = parse(line)
+            handled?(message) if message
+          end
+          chunk = @stdout.read_nonblock(65_536, exception: false)
+          return if chunk == :wait_readable
+
+          exited unless chunk
+          @buffer << chunk
+        end
+      end
+
+      def handled?(message)
+        return true if route(message)
+        return false unless message.key?('method') && message.key?('id')
+
+        answer(message)
+        true
+      end
+
+      def route(message)
+        @subscriptions.find { |subscription| subscription.claims?(message) }&.messages&.push(message)
+      end
+
+      def uninterrupted(&)
+        Thread.handle_interrupt(CancelledError => :never, &)
+      end
 
       def await(id, timeout)
         deadline = monotonic_now + timeout
@@ -50,11 +158,7 @@ module RubyLLM
           reply = read(deadline)
           return reply if reply['id'] == id && !reply.key?('method')
 
-          if reply.key?('method') && reply.key?('id')
-            answer(reply)
-          elsif reply.key?('method')
-            yield reply if block_given?
-          end
+          yield reply if !handled?(reply) && reply.key?('method') && block_given?
         end
       end
 
@@ -69,13 +173,19 @@ module RubyLLM
 
       def read(deadline)
         loop do
-          line = next_line(deadline)
-          next if line.strip.empty?
-
-          return JSON.parse(line)
-        rescue JSON::ParserError
-          RubyLLM.logger.debug { "#{name} wrote a line that is not JSON" }
+          message = parse(next_line(deadline))
+          return message if message
         end
+      end
+
+      def parse(line)
+        return if line.strip.empty?
+
+        message = JSON.parse(line)
+        message if message.is_a?(Hash)
+      rescue JSON::ParserError
+        RubyLLM.logger.debug { "#{name} wrote a line that is not JSON" }
+        nil
       end
 
       def next_line(deadline)
@@ -103,12 +213,7 @@ module RubyLLM
       end
 
       def answer(request)
-        reply = if request['method'] == 'ping'
-                  { jsonrpc: '2.0', id: request['id'], result: {} }
-                else
-                  { jsonrpc: '2.0', id: request['id'], error: { code: -32_601, message: 'Method not found' } }
-                end
-        write(reply)
+        write(Client.reply(request))
       end
 
       def start

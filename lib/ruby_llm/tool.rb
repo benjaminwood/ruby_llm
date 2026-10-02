@@ -113,8 +113,8 @@ module RubyLLM
       #     parameter :units, type: :string, description: "metric or imperial", required: false
       #   end
       #
-      def parameter(name, **options)
-        declared_parameters[name] = Parameter.new(name, **options)
+      def parameter(name, **)
+        declared_parameters[name] = Parameter.new(name, **)
       end
 
       def declared_parameters # :nodoc:
@@ -225,6 +225,7 @@ module RubyLLM
         case result
         when Attachment then ['', [result]]
         when Array then split_array_result(result)
+        when MCP::Result then split_result(result.content)
         else [result_content(result), []]
         end
       end

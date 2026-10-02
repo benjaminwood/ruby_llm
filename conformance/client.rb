@@ -15,9 +15,24 @@ redirect_uri = 'http://localhost:0/callback'
 
 RubyLLM.configure { |config| config.mcp_client_id = 'https://conformance-test.local/client-metadata.json' }
 
+def oauth_settings(scenario, context)
+  client = { client_id: context['client_id'], client_secret: context['client_secret'] }
+  case scenario
+  when 'auth/client-credentials-basic' then client.merge(grant: :client_credentials)
+  when 'auth/client-credentials-jwt'
+    { grant: :client_credentials, client_id: context['client_id'], private_key: context['private_key_pem'] }
+  when 'auth/wif-jwt-bearer' then { assertion: context['valid_jwt'] }
+  when 'auth/enterprise-managed-authorization'
+    client.merge(identity_provider: { issuer: context['idp_issuer'], client_id: context['idp_client_id'],
+                                      id_token: context['idp_id_token'] })
+  else client
+  end
+end
+
+settings = oauth_settings(scenario, context)
 mcp = Class.new(RubyLLM::MCP) do
   url url
-  oauth client_id: context['client_id'], client_secret: context['client_secret'] if scenario.start_with?('auth/')
+  oauth(**settings) if scenario.start_with?('auth/')
   before_input_request { |request| request.answer(confirmed: true) }
 end.new
 

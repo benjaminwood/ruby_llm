@@ -56,6 +56,46 @@ RSpec.describe RubyLLM::Chat do
     expect(chat.messages.find { |message| message.role == :tool }.content).to eq('5')
   end
 
+  describe 'tool results' do
+    let(:laptop_transport) do
+      Class.new do
+        def request(message, **)
+          result = case message[:method]
+                   when 'server/discover' then { 'supportedVersions' => ['2026-07-28'] }
+                   when 'tools/list' then { 'tools' => [{ 'name' => 'read_notes', 'inputSchema' => {} }] }
+                   else { 'isError' => true, 'content' => [{ 'type' => 'text', 'text' => 'The laptop is offline' }] }
+                   end
+          { 'jsonrpc' => '2.0', 'id' => message[:id], 'result' => result }
+        end
+
+        def notify(*, **) = nil
+        def cancel(*, **) = nil
+        def close = nil
+      end
+    end
+
+    it 'stores and reports a failed call as 2.0 did, through a custom transport' do
+      results = []
+      laptop = RubyLLM.mcp(transport: laptop_transport.new, name: 'laptop')
+      allow(chat.provider).to receive(:complete).and_return(tool_call('read_notes', {}), answer)
+
+      chat.with_mcp(laptop).after_tool_result { |result| results << result }.ask('Read my notes')
+
+      expect(chat.messages.find(&:tool_result?).content).to eq('{"error":"The laptop is offline"}')
+      expect(results).to eq([{ error: 'The laptop is offline' }])
+    end
+
+    it 'stores a successful result as before' do
+      allow(chat.provider).to receive(:complete).and_return(tool_call('picture', {}), answer)
+
+      chat.with_mcp(files).ask('Show me')
+
+      message = chat.messages.find(&:tool_result?)
+      expect(message.content).to eq("Here it is\n\npixel.png: file:///pixel.png")
+      expect(message.attachments.first).to have_attributes(mime_type: 'image/png')
+    end
+  end
+
   it 'pauses server tools that need approval' do
     files_class.requires_approval :add
     allow(chat.provider).to receive(:complete).and_return(tool_call('add', { 'a' => 2, 'b' => 3 }), answer)
@@ -117,6 +157,7 @@ RSpec.describe RubyLLM::Chat do
       chat.with_mcp(files).ask('Deploy')
 
       expect(chat).to be_awaiting_input
+      expect(chat).to be_waiting
       request = chat.pending_inputs.first
       expect(request).to have_attributes(message: 'Which environment?', tool_call: have_attributes(name: 'deploy'))
 
@@ -124,6 +165,13 @@ RSpec.describe RubyLLM::Chat do
 
       expect(chat.messages.find { |message| message.role == :tool }.content).to eq('Deployed to production')
       expect(chat).not_to be_awaiting_input
+    end
+
+    it 'answers with the defaults the server gave' do
+      chat.with_mcp(files).ask('Deploy')
+      chat.answer(chat.pending_inputs.first).complete
+
+      expect(chat.messages.find { |message| message.role == :tool }.content).to eq('Deployed to staging')
     end
 
     it 'resumes a declined request' do
@@ -166,6 +214,149 @@ RSpec.describe RubyLLM::Chat do
       expect(chat).to be_awaiting_input
       expect(chat).to be_awaiting_approval
       expect { chat.ask_later('Next') }.to raise_error(RubyLLM::PendingToolCallsError, /answering pending inputs/)
+    end
+  end
+
+  describe 'MCP Apps' do
+    before { files_class.extension :apps }
+
+    it 'never offers the model tools that only a UI may call' do
+      chat.with_mcp(files)
+
+      expect(chat.tools.keys).to include(:forecast)
+      expect(chat.tools.keys).not_to include(:refresh_forecast)
+      expect(files.tools.map(&:name)).to include('refresh_forecast')
+    end
+
+    it 'keeps those tools from the model when given to the chat directly' do
+      chat.with_tools(files.tools.find { |tool| tool.name == 'refresh_forecast' })
+
+      expect(chat.tools).to be_empty
+    end
+
+    it 'keeps the result of a tool with a UI on its tool result message' do
+      allow(chat.provider).to receive(:complete).and_return(tool_call('forecast', { 'city' => 'Rome' }), answer)
+
+      chat.with_mcp(files).ask('How is the weather in Rome?')
+
+      message = chat.messages.find(&:tool_result?)
+      expect(message.content).to eq('Sunny in Rome')
+      expect(message.mcp_result).to have_attributes(
+        ui_uri: 'ui://spec/forecast', structured: { 'city' => 'Rome', 'temperature' => 24 },
+        meta: { 'com.example/station' => 'spec' }
+      )
+    end
+
+    it 'keeps no result for tools without a UI' do
+      allow(chat.provider).to receive(:complete).and_return(tool_call('add', { 'a' => 2, 'b' => 3 }), answer)
+
+      chat.with_mcp(files).ask('What is 2 + 3?')
+
+      expect(chat.messages.find(&:tool_result?).mcp_result).to be_nil
+    end
+
+    it 'hands the server result to after_tool_result' do
+      results = []
+      allow(chat.provider).to receive(:complete).and_return(tool_call('forecast', { 'city' => 'Rome' }), answer)
+
+      chat.with_mcp(files).after_tool_result { |result| results << result }.ask('How is the weather in Rome?')
+
+      expect(results.first).to have_attributes(structured: { 'city' => 'Rome', 'temperature' => 24 })
+    end
+  end
+
+  describe 'tasks' do
+    before { files_class.extension :tasks }
+
+    def server_tasks = files.send(:client).request('spec/tasks')
+
+    def run_task(name)
+      allow(chat.provider).to receive(:complete).and_return(tool_call(name, {}), answer)
+      chat.with_mcp(files).ask('Run it')
+    end
+
+    it 'pauses a tool call that becomes a task, without waiting for it' do
+      run_task('report')
+
+      expect(chat).to be_awaiting_tasks
+      expect(chat).to be_waiting
+      expect(chat).not_to be_complete
+      expect(chat.pending_tasks.first).to have_attributes(id: 'task-1', status: :working, poll_interval: 0.01,
+                                                          tool_call: have_attributes(name: 'report'))
+      expect(server_tasks['polls']).to eq('task-1' => 0)
+    end
+
+    it 'checks on each task once every time it completes, and resumes once they finish' do
+      run_task('report')
+
+      chat.complete
+      expect(chat).to be_awaiting_tasks
+      expect(chat.pending_tasks.first).to have_attributes(status: :working, status_message: 'Rendering')
+
+      chat.complete
+      expect(chat).to be_complete
+      expect(chat).not_to be_awaiting_tasks
+      expect(chat.messages.find(&:tool_result?).content).to eq('Report ready')
+      expect(server_tasks['polls']).to eq('task-1' => 2)
+    end
+
+    it 'checks on a task without resuming the chat' do
+      run_task('report')
+
+      task = chat.pending_tasks.first.refresh.refresh
+
+      expect(task).to be_completed
+      expect(chat).to be_awaiting_tasks
+      expect(chat.complete.content).to eq('Done')
+    end
+
+    it 'reports what a task is doing to after_tool_progress' do
+      reports = []
+      run_task('report')
+
+      chat.after_tool_progress { |call, progress| reports << [call.name, progress.message] }.complete
+
+      expect(reports).to eq([%w[report Rendering]])
+    end
+
+    it 'pauses on the input requests of a task until the user answers' do
+      run_task('approve_report')
+      chat.complete
+
+      expect(chat).to be_awaiting_input
+      expect(chat).not_to be_awaiting_tasks
+      request = chat.pending_inputs.first
+      expect(request).to have_attributes(message: 'Publish the report?',
+                                         tool_call: have_attributes(name: 'approve_report'))
+
+      chat.answer(request, approved: true).complete
+
+      expect(chat).to be_complete
+      expect(chat.messages.find(&:tool_result?).content).to eq('Approved: true')
+    end
+
+    it 'cancels its tasks when the chat is cancelled' do
+      run_task('endless_report')
+      task = chat.pending_tasks.first
+
+      chat.cancel
+      expect { chat.complete }.to raise_error(RubyLLM::CancelledError)
+
+      expect(server_tasks['cancelled']).to eq([task.id])
+      expect(chat).not_to be_awaiting_tasks
+      expect(chat).not_to be_waiting
+    end
+
+    it 'raises the error a task failed with' do
+      run_task('broken_report')
+
+      expect { chat.complete }.to raise_error(RubyLLM::MCP::Error, 'Renderer crashed')
+    end
+
+    it 'refuses a new question while a task runs' do
+      run_task('report')
+
+      expect { chat.ask('Anything else?') }.to raise_error(RubyLLM::PendingToolCallsError, /waiting for tasks/)
     end
   end
 

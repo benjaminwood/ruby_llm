@@ -2,6 +2,7 @@
 
 require 'digest'
 require 'openssl'
+require 'strscan'
 
 module RubyLLM
   class MCP
@@ -11,13 +12,43 @@ module RubyLLM
     # client is configured, PKCE, resource indicators, issuer checks, and
     # token refresh. Credentials live in the configured
     # +mcp_credential_store+, keyed by owner and server.
+    #
+    # Two grants need no user to authorize: the client credentials grant
+    # of the OAuth Client Credentials extension, and the JWT bearer grant
+    # (RFC 7523 section 2.1). The latter presents a token the workload's
+    # platform issued (Workload Identity Federation) or an identity
+    # assertion grant the user's identity provider issued for their ID
+    # token (Enterprise-Managed Authorization). As the extensions' flows
+    # describe, a token is requested once the server rejects a request
+    # without one, and again before it expires. Pre-registered clients
+    # authenticate with their secret or with a private_key_jwt assertion
+    # (RFC 7523 section 2.2) addressed to the authorization server's
+    # issuer.
+    #
+    # A server that requires DPoP-bound tokens (RFC 9449) gets them: new
+    # tokens are bound to a key kept with them in the credentials, and
+    # every token request and server request carries a fresh proof with
+    # the nonce the server last supplied.
     class OAuth # :nodoc:
       PENDING_FOR = 600
       REFRESH_EARLY = 60
+      ASSERTION_FOR = 60
+      GRANTS = %i[authorization_code client_credentials jwt_bearer].freeze
+      JWT_BEARER = 'urn:ietf:params:oauth:grant-type:jwt-bearer'
+      TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange'
+      ID_JAG = 'urn:ietf:params:oauth:token-type:id-jag'
+      ID_TOKEN = 'urn:ietf:params:oauth:token-type:id_token'
+      CLIENT_ASSERTION = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
+      CLIENT_CREDENTIALS = 'io.modelcontextprotocol/oauth-client-credentials'
+      ENTERPRISE_MANAGED = 'io.modelcontextprotocol/enterprise-managed-authorization'
       SERVER_FIELDS = %w[
-        issuer token_endpoint token_endpoint_auth_methods_supported authorization_response_iss_parameter_supported
+        issuer token_endpoint token_endpoint_auth_methods_supported token_endpoint_auth_signing_alg_values_supported
+        authorization_response_iss_parameter_supported
       ].freeze
-      CLIENT_FIELDS = %w[client_id client_secret issuer server redirect_uri].freeze
+      CLIENT_FIELDS = %w[client_id client_secret issuer server redirect_uri dpop_key].freeze
+      TOKEN = /[!\#$%&'*+.^_`|~0-9A-Za-z-]+/
+      PARAMETER = /#{TOKEN}\s*=/
+      QUOTED = /"((?:[^"\\]|\\.)*)"/
       AUTHORIZATION_SERVER_PATHS = [
         '/.well-known/oauth-authorization-server%<path>s',
         '/.well-known/openid-configuration%<path>s',
@@ -31,26 +62,54 @@ module RubyLLM
         @memory_store ||= MemoryStore.new
       end
 
+      # Returns the authorization extensions that the options of MCP.oauth
+      # use, as client capabilities declare them, so servers that require
+      # an extension know the client follows it.
+      def self.extensions(settings)
+        return {} unless settings
+
+        names = []
+        names << CLIENT_CREDENTIALS if settings[:grant] == :client_credentials
+        names << ENTERPRISE_MANAGED if settings[:identity_provider]
+        names.to_h { |name| [name, {}] }
+      end
+
       # Runs the block while no other thread in this process refreshes the
       # credentials stored under +key+.
       def self.refreshing(key, &)
         @refreshes_lock.synchronize { @refreshes[key] }.synchronize(&)
       end
 
-      # Reads the parameters of a Bearer WWW-Authenticate challenge.
+      # Reads the challenges of a WWW-Authenticate header (RFC 9110
+      # section 11.6.1) into their parameters, keyed by lowercase scheme.
       def self.challenge(header)
-        header.to_s.sub(/\A\s*Bearer\s+/i, '').split(',').to_h do |pair|
-          name, value = pair.split('=', 2).map(&:strip)
-          [name.to_sym, value.to_s.delete_prefix('"').delete_suffix('"')]
+        scanner = StringScanner.new(header.to_s)
+        challenges = {}
+        while scanner.skip(/[\s,]*/) && (scheme = scanner.scan(TOKEN))
+          parameters = challenges[scheme.downcase] ||= {}
+          while scanner.skip(/[\s,]*/) && scanner.check(PARAMETER)
+            name = scanner.scan(TOKEN).downcase.to_sym
+            scanner.skip(/\s*=\s*/)
+            value = scanner.scan(QUOTED) ? scanner[1].gsub(/\\(.)/, '\1') : scanner.scan(/[^\s,]*/)
+            parameters[name] ||= value
+          end
         end
+        challenges
       end
 
-      def initialize(server_url, owner:, scopes:, client_id:, client_secret:, config: RubyLLM.config)
+      def initialize(server_url, owner:, scopes: nil, client_id: nil, client_secret: nil, grant: nil,
+                     private_key: nil, assertion: nil, identity_provider: nil, config: RubyLLM.config,
+                     resolve: ->(value) { value })
         @server_url = server_url.to_s
         @owner = owner
         @scopes = scopes
-        @client_id = client_id
-        @client_secret = client_secret
+        @client_id = resolve.call(client_id)
+        @client_secret = resolve.call(client_secret)
+        @private_key = resolve.call(private_key)
+        @assertion = assertion
+        @identity_provider = identity_provider
+        @grant = grant || (assertion || identity_provider ? :jwt_bearer : :authorization_code)
+        @resolve = resolve
         @config = config
       end
 
@@ -61,8 +120,38 @@ module RubyLLM
       def access_token
         return unless authorized?
 
-        refresh if expiring?
+        renew if expiring?
         credential['access_token']
+      end
+
+      # Returns the headers that authorize a +verb+ request to the server:
+      # none without a token, and a proof of possession with a bound one.
+      def authorization_headers(verb = 'POST')
+        token = access_token or return {}
+        return { 'Authorization' => "Bearer #{token}" } unless credential['token_type'] == 'DPoP'
+
+        proof = proofs.sign(credential['dpop_key'], @server_url, token:, verb:)
+        { 'Authorization' => "DPoP #{token}", 'DPoP' => proof }
+      end
+
+      # Answers the server's rejection of a request, given its challenge,
+      # its DPoP nonce, and the ways the request +recovered+ before. Returns
+      # how to send it again, +:nonce+ with the nonce in its proof or
+      # +:token+ with a new token, or +nil+ when it is not worth sending
+      # again.
+      def recover(challenge, nonce: nil, recovered: [])
+        @challenge = challenge
+        remember_nonce(nonce)
+        recovery = nonce && nonce_requested? ? :nonce : :token
+        return if recovered.include?(recovery)
+
+        recovery if recovery == :nonce || renewed?
+      end
+
+      # Keeps the DPoP nonce the server supplied with a response for the
+      # next proof (RFC 9449 section 9).
+      def remember_nonce(nonce)
+        proofs.remember(@server_url, nonce)
       end
 
       def refresh
@@ -82,6 +171,8 @@ module RubyLLM
       end
 
       def authorization_url(redirect_uri:, challenge: nil)
+        raise ConfigurationError, "The #{@grant} grant needs no authorization" unless authorization_code?
+
         @challenge = challenge
         server = authorization_server
         client = client_for(server, redirect_uri)
@@ -89,7 +180,7 @@ module RubyLLM
         state = SecureRandom.urlsafe_base64(32)
         pending = client.merge('state' => state, 'verifier' => verifier, 'redirect_uri' => redirect_uri,
                                'issuer' => server['issuer'], 'scope' => scopes_for(server),
-                               'expires_at' => Time.now.to_i + PENDING_FOR)
+                               'dpop_key' => binding_key, 'expires_at' => Time.now.to_i + PENDING_FOR)
         write(credential.to_h.merge('pending' => pending.merge('server' => server.slice(*SERVER_FIELDS))))
 
         query = { response_type: 'code', client_id: client['client_id'], redirect_uri:, state:,
@@ -102,7 +193,7 @@ module RubyLLM
         pending = credential&.fetch('pending', nil) or raise Error, 'No authorization in progress'
         check_callback(pending, params)
         tokens = token_request('authorization_code', code: value(params, :code), redirect_uri: pending['redirect_uri'],
-                                                     code_verifier: pending['verifier'], pending:)
+                                                     code_verifier: pending['verifier'], client: pending)
         store_tokens(tokens, client: pending.slice(*CLIENT_FIELDS, 'scope'))
       end
 
@@ -130,13 +221,110 @@ module RubyLLM
         data = credential.to_h.except('pending')
         data = data.except(*CLIENT_FIELDS).merge(client) if client
         data = data.merge('access_token' => tokens['access_token'], 'scope' => tokens['scope'] || data['scope'],
-                          'expires_at' => (Time.now.to_i + tokens['expires_in'].to_i if tokens['expires_in']))
+                          'expires_at' => (Time.now.to_i + tokens['expires_in'].to_i if tokens['expires_in']),
+                          'token_type' => ('DPoP' if tokens['token_type'].to_s.casecmp?('DPoP')))
         data['refresh_token'] = tokens['refresh_token'] if tokens['refresh_token']
         write(data.compact)
       end
 
       def expiring?
         credential['expires_at'] && credential['expires_at'] - REFRESH_EARLY < Time.now.to_i
+      end
+
+      def authorization_code?
+        @grant == :authorization_code
+      end
+
+      def renew
+        authorization_code? ? refresh : obtain
+      end
+
+      def renewed?
+        authorization_code? ? authorized? && refresh : obtain
+      end
+
+      # Requests a token with the configured grant, unless another worker
+      # has replaced the one the server rejected. Failures raise
+      # UnauthorizedError: Client falls back to the older handshake on an
+      # MCP::Error, which would ask the authorization server again.
+      def obtain
+        rejected = credential&.fetch('access_token', nil)
+        synchronize do
+          @credential = store.read(key)
+          next true if authorized? && credential['access_token'] != rejected && !expiring?
+
+          server = authorization_server
+          client = granting_client(server)
+          scope = scopes_for(server)
+          grant_type, grant = grant_parameters(server, scope)
+          store_tokens(token_request(grant_type, client:, scope:, **grant), client:)
+          true
+        end
+      rescue Error => e
+        raise UnauthorizedError.new(e.message, response: e.response)
+      end
+
+      def granting_client(server)
+        if @grant == :client_credentials && @client_id.nil?
+          raise ConfigurationError, 'The client_credentials grant needs a client_id'
+        end
+
+        preregistered_client(server).merge('issuer' => server['issuer'], 'server' => server.slice(*SERVER_FIELDS),
+                                           'dpop_key' => binding_key).compact
+      end
+
+      # RFC 9449 section 7.1 and RFC 9728 section 2: a server requires
+      # DPoP-bound tokens when it challenges with the DPoP scheme and not
+      # Bearer, or when its metadata says so.
+      def dpop_required?
+        schemes = @challenge.to_h.keys
+        @dpop_required || (schemes.include?('dpop') && !schemes.include?('bearer'))
+      end
+
+      def binding_key
+        Key.generate.to_pem if dpop_required?
+      end
+
+      # RFC 9449 section 9: a server that wants a nonce in proofs answers
+      # with use_dpop_nonce and the nonce to use.
+      def nonce_requested?
+        @challenge.to_h.dig('dpop', :error) == 'use_dpop_nonce' && credential&.fetch('token_type', nil) == 'DPoP'
+      end
+
+      def proofs
+        @proofs ||= Proofs.new
+      end
+
+      # Assertions are resolved for every token, since workload platforms
+      # rotate the tokens they issue and ID tokens expire.
+      def grant_parameters(server, scope)
+        return ['client_credentials', {}] if @grant == :client_credentials
+
+        assertion = @identity_provider ? identity_assertion(server, scope) : @resolve.call(@assertion)
+        raise ConfigurationError, 'The jwt_bearer grant needs an assertion or an identity provider' unless assertion
+
+        [JWT_BEARER, { assertion: }]
+      end
+
+      # Exchanges the user's ID token at the identity provider for an
+      # Identity Assertion JWT Authorization Grant addressed to the
+      # server's authorization server (enterprise-managed authorization,
+      # section 4). Only that grant is forwarded: any other token the
+      # identity provider returns is the user's credential there.
+      def identity_assertion(server, scope)
+        provider = Hash(@resolve.call(@identity_provider)).to_h { |name, value| [name.to_sym, @resolve.call(value)] }
+        unless provider[:issuer] && provider[:id_token]
+          raise ConfigurationError, 'The identity provider needs an issuer and an id_token'
+        end
+
+        client = { 'client_id' => provider[:client_id], 'client_secret' => provider[:client_secret],
+                   'server' => discover_authorization_server(provider[:issuer]) }
+        grant = token_request(TOKEN_EXCHANGE, client:, key: nil, requested_token_type: ID_JAG,
+                                              audience: server['issuer'], scope:, subject_token: provider[:id_token],
+                                              subject_token_type: ID_TOKEN)
+        return grant['access_token'] if grant['issued_token_type'] == ID_JAG
+
+        raise Error, "#{provider[:issuer]} did not issue an identity assertion grant"
       end
 
       def check_callback(pending, params)
@@ -164,16 +352,33 @@ module RubyLLM
         credential.dig('pending', 'server', 'authorization_response_iss_parameter_supported') == true
       end
 
-      def token_request(grant_type, pending: nil, **params)
-        client = pending || credential
+      def token_request(grant_type, client: credential, key: (signing_key if client['client_id'] == @client_id),
+                        **params)
         server = client['server'] or raise Error, 'No authorization server known; authorize first'
-        form = params.merge(grant_type:, client_id: client['client_id'], resource:)
-        headers = { 'Content-Type' => 'application/x-www-form-urlencoded', 'Accept' => 'application/json' }
-        authenticate(client, server, form, headers) if client['client_secret']
-        post(server['token_endpoint'], URI.encode_www_form(form.compact), headers)
+        send_token_request(server, client, key, params.merge(grant_type:))
       rescue Error => e
-        forget_registration(client) if e.data.is_a?(Hash) && e.data['error'] == 'invalid_client'
+        forget_registration(client) if oauth_error(e) == 'invalid_client'
         raise
+      end
+
+      # RFC 9449 section 8: an authorization server that wants a nonce in
+      # the proof answers use_dpop_nonce once with the nonce to use. Every
+      # attempt signs a new proof and a new client assertion.
+      def send_token_request(server, client, key, params, retried: false)
+        url = server['token_endpoint']
+        form = params.merge(client_id: client['client_id'], resource:)
+        headers = { 'Content-Type' => 'application/x-www-form-urlencoded', 'Accept' => 'application/json' }
+        authenticate(client, server, form, headers, key)
+        headers['DPoP'] = proofs.sign(client['dpop_key'], url) if client['dpop_key']
+        post(url, URI.encode_www_form(form.compact), headers)
+      rescue Error => e
+        raise if retried || !client['dpop_key'] || oauth_error(e) != 'use_dpop_nonce'
+
+        send_token_request(server, client, key, params, retried: true)
+      end
+
+      def oauth_error(error)
+        error.data['error'] if error.data.is_a?(Hash)
       end
 
       def forget_registration(client)
@@ -181,20 +386,46 @@ module RubyLLM
         store.delete(registration) if store.read(registration)&.fetch('client_id', nil) == client['client_id']
       end
 
-      def authenticate(client, server, form, headers)
-        methods = server['token_endpoint_auth_methods_supported'] || ['client_secret_basic']
-        if methods.include?('client_secret_basic')
-          credentials = Base64.strict_encode64("#{client['client_id']}:#{client['client_secret']}")
-          headers['Authorization'] = "Basic #{credentials}"
-        else
-          form[:client_secret] = client['client_secret']
+      def authenticate(client, server, form, headers, key)
+        if key
+          form.delete(:client_id)
+          form.merge!(client_assertion_type: CLIENT_ASSERTION,
+                      client_assertion: client_assertion(key, client['client_id'], server))
+        elsif client['client_secret']
+          methods = server['token_endpoint_auth_methods_supported'] || ['client_secret_basic']
+          if methods.include?('client_secret_basic')
+            headers['Authorization'] = "Basic #{basic_credentials(client['client_id'], client['client_secret'])}"
+          else
+            form[:client_secret] = client['client_secret']
+          end
         end
+      end
+
+      # RFC 6749 section 2.3.1: the client ID and secret are form-encoded
+      # before they become the user and password of Basic authentication.
+      def basic_credentials(client_id, client_secret)
+        Base64.strict_encode64([client_id, client_secret].map { |part| URI.encode_www_form_component(part) }.join(':'))
+      end
+
+      # RFC 7523bis section 4: the issuer is the sole audience, so no other
+      # authorization server can replay the assertion, and the explicit
+      # type tells servers the client follows that rule.
+      def client_assertion(key, client_id, server)
+        now = Time.now.to_i
+        claims = { iss: client_id, sub: client_id, aud: server['issuer'], iat: now, exp: now + ASSERTION_FOR,
+                   jti: SecureRandom.uuid }
+        algorithm = key.algorithm(server['token_endpoint_auth_signing_alg_values_supported'])
+        key.jwt(claims, algorithm:, typ: 'client-authentication+jwt')
+      end
+
+      def signing_key
+        @signing_key ||= (Key.new(@private_key) if @private_key)
       end
 
       def authorization_server
         metadata = protected_resource_metadata
         server = metadata ? described_authorization_server(metadata) : legacy_authorization_server
-        unless Array(server['code_challenge_methods_supported']).include?('S256')
+        if authorization_code? && !Array(server['code_challenge_methods_supported']).include?('S256')
           raise Error, "#{server['issuer']} does not support PKCE with S256"
         end
 
@@ -207,11 +438,12 @@ module RubyLLM
 
         @resource = checked_resource(metadata['resource'])
         @scopes_supported = metadata['scopes_supported']
+        @dpop_required = metadata['dpop_bound_access_tokens_required'] == true
         discover_authorization_server(issuer)
       end
 
       def protected_resource_metadata
-        url = @challenge&.dig(:resource_metadata)
+        url = challenged(:resource_metadata)
         return get_json(url) if url && same_origin?(URI(url), URI(@server_url))
 
         uri = URI(@server_url)
@@ -295,7 +527,8 @@ module RubyLLM
         issuer = store.read(issuer_key)&.fetch('issuer', nil)
         store.write(issuer_key, { 'issuer' => server['issuer'] }, owner: nil) unless issuer
         if issuer && !same_issuer?(issuer, server['issuer'])
-          raise Error, "#{@client_id} is registered with #{issuer}, but #{@server_url} now uses #{server['issuer']}"
+          raise Error, "#{@client_id || 'The workload'} is registered with #{issuer}, " \
+                       "but #{@server_url} now uses #{server['issuer']}"
         end
 
         { 'client_id' => @client_id, 'client_secret' => @client_secret }.compact
@@ -329,12 +562,20 @@ module RubyLLM
       end
 
       def scopes_for(server)
-        challenged = @challenge&.dig(:scope)&.split
-        scopes = if challenged then Array(@scopes) + challenged + credential.to_h['scope'].to_s.split
+        requested = challenged(:scope)&.split
+        scopes = if requested then Array(@scopes) + requested + credential.to_h['scope'].to_s.split
                  else Array(@scopes || @scopes_supported)
                  end
-        scopes += ['offline_access'] if Array(server['scopes_supported']).include?('offline_access')
+        scopes += ['offline_access'] if offline_access?(server)
         scopes.uniq.join(' ') unless scopes.empty?
+      end
+
+      def offline_access?(server)
+        authorization_code? && Array(server['scopes_supported']).include?('offline_access')
+      end
+
+      def challenged(name)
+        @challenge.to_h.each_value.filter_map { |parameters| parameters[name] }.first
       end
 
       def resource
@@ -355,16 +596,24 @@ module RubyLLM
       end
 
       def post(url, body, headers)
-        parse(connection(url).post(url, body, headers))
+        response = connection(url).post(url, body, headers)
+        proofs.remember(url, response.headers['dpop-nonce'])
+        parse(response)
       rescue Faraday::Error => e
+        raise refusal(url, e.response && Faraday::Response.new(status: e.response[:status], body: e.response[:body],
+                                                               response_headers: e.response[:headers]))
+      end
+
+      def refusal(url, response)
+        proofs.remember(url, Hash(response&.headers)['dpop-nonce'])
         details = begin
-          JSON.parse(e.response&.dig(:body).to_s)
+          JSON.parse(response&.body.to_s)
         rescue JSON::ParserError
           {}
         end
         details = {} unless details.is_a?(Hash)
-        raise Error.new("#{URI(url).host} refused the request: #{details['error_description'] || details['error']}",
-                        data: details)
+        Error.new("#{URI(url).host} refused the request: #{details['error_description'] || details['error']}",
+                  data: details, response:)
       end
 
       def parse(response)

@@ -124,7 +124,7 @@ chat.complete # appends the denial result and asks the model to respond
 
 Calls that need no approval still run while protected calls wait.
 
-If you [drive the loop yourself]({% link _advanced/agentic-workflows.md %}#driving-the-loop-yourself), stop at pending approvals: `chat.step until chat.complete? || chat.awaiting_approval?`.
+If you [drive the loop yourself]({% link _advanced/agentic-workflows.md %}#driving-the-loop-yourself), stop when the chat is waiting: `chat.step until chat.complete? || chat.waiting?`. `waiting?` is true while every pending call waits on something outside the chat, such as an approval, and `awaiting_approval?` tells you an approval is what it waits on.
 
 Finish the pending calls before asking another question. Otherwise `ask` raises `RubyLLM::PendingToolCallsError`.
 
@@ -295,7 +295,7 @@ end
 
 `progress.value` and `progress.total` are set when the tool counts its work, and `progress.fraction` gives the share done. Tools from [MCP servers]({% link _core_features/mcp.md %}#progress-and-cancellation) report the server's progress through the same callback.
 
-The callback runs in the thread or fiber that reports, before the tool's result. On Ruby 3.2 and later, that includes threads and fibers the tool starts itself, such as a batch of downloads. With concurrent tool execution, callbacks for different tool calls can run at the same time, so keep shared state thread-safe. Tools can report as often as they like; throttle in the callback if you forward reports to a UI. Outside a chat, `progress` does nothing.
+The callback runs in the thread or fiber that reports, before the tool's result. That includes threads and fibers the tool starts itself, such as a batch of downloads. With concurrent tool execution, callbacks for different tool calls can run at the same time, so keep shared state thread-safe. Tools can report as often as they like; throttle in the callback if you forward reports to a UI. Outside a chat, `progress` does nothing.
 
 ### Limiting Tool Calls
 
